@@ -1,0 +1,12 @@
+{
+  "name": "Stockroom",
+  "short_name": "Stockroom",
+  "description": "Inventory, sales and returns ledger",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FAF6EE",
+  "theme_color": "#1C2431",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
