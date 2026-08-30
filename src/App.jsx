@@ -5,8 +5,12 @@ import {
   Package, Plus, Pencil, Trash2, Search, Download, Receipt,
   ShoppingCart, X, Check, AlertTriangle, ChevronRight, Boxes,
   Printer, ArrowLeft, FileText, Link2, RefreshCw, Image as ImageIcon,
-  DatabaseBackup, UploadCloud, Users, RotateCcw, Minus, Share2, FileSpreadsheet, EyeOff, Eye, Sun, Moon
+  DatabaseBackup, UploadCloud, Users, RotateCcw, Minus, Share2, FileSpreadsheet, EyeOff, Eye, Sun, Moon,
+  LayoutDashboard, TrendingUp, TrendingDown, Trophy
 } from "lucide-react";
+import {
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+} from "recharts";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');`;
 
@@ -89,6 +93,17 @@ function currency(n) {
 
 function todayStr() {
   return new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Parses the "30 Aug 2026" style strings the app stores on invoices/returns
+// back into a real Date, so we can bucket by calendar day for the dashboard.
+function parseAppDate(str) {
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function dayKey(d) {
+  return d.toISOString().slice(0, 10);
 }
 
 const STOCK_KEY = "stockroom:items";
@@ -195,7 +210,7 @@ export default function StockroomApp() {
   const [returnSeq, setReturnSeq] = useState(1);
   const [loaded, setLoaded] = useState(false);
   const [bootDone, setBootDone] = useState(false);
-  const [tab, setTab] = useState("inventory");
+  const [tab, setTab] = useState("dashboard");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -936,6 +951,7 @@ export default function StockroomApp() {
           .sr-mobile-backup { display: flex !important; }
           .sr-mobile-backup button { flex: 1; justify-content: center; }
           .sr-stat-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          .sr-dash-grid { grid-template-columns: 1fr !important; }
         }
         @media (max-width: 480px) {
           .sr-form-grid { grid-template-columns: 1fr !important; }
@@ -963,6 +979,9 @@ export default function StockroomApp() {
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
         <MobileNav tab={tab} setTab={setTab} />
         <main style={{ flex: 1, padding: "28px 32px 60px", overflowY: "auto" }} className="stockroom-scroll sr-main">
+          {tab === "dashboard" && (
+            <DashboardView items={items} invoices={invoices} returns={returns} onGoToSell={() => setTab("sell")} onGoToInventory={() => setTab("inventory")} />
+          )}
           {tab === "inventory" && (
             <InventoryView
               items={filteredItems}
@@ -1272,6 +1291,7 @@ function AccountModal({ username, onClose, onSubmit }) {
 
 function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, username, onAccount, onLogout, theme, onToggleTheme }) {
   const items = [
+    { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "inventory", label: "Inventory", icon: Boxes, count: counts.items },
     { key: "sell", label: "New sale", icon: ShoppingCart },
     { key: "invoices", label: "Invoices", icon: Receipt, count: counts.invoices },
@@ -1367,6 +1387,7 @@ function SidebarSmallButton({ icon: Icon, label, onClick }) {
 
 function MobileNav({ tab, setTab }) {
   const items = [
+    { key: "dashboard", label: "Home", icon: LayoutDashboard },
     { key: "inventory", label: "Stock", icon: Boxes },
     { key: "sell", label: "Sell", icon: ShoppingCart },
     { key: "invoices", label: "Invoices", icon: Receipt },
@@ -1977,6 +1998,179 @@ function CustomersView({ invoices, returns, onView }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function DashboardView({ items, invoices, returns, onGoToSell, onGoToInventory }) {
+  const today = todayStr();
+
+  const todaysInvoices = useMemo(() => invoices.filter((inv) => inv.date === today), [invoices, today]);
+  const todaysReturns = useMemo(() => returns.filter((r) => r.date === today), [returns, today]);
+  const todaysSalesTotal = useMemo(() => +todaysInvoices.reduce((s, inv) => s + inv.total, 0).toFixed(2), [todaysInvoices]);
+  const todaysReturnsTotal = useMemo(() => +todaysReturns.reduce((s, r) => s + r.total, 0).toFixed(2), [todaysReturns]);
+
+  const itemById = useMemo(() => new Map(items.map((it) => [it.id, it])), [items]);
+
+  // Profit is computed against each item's CURRENT cost price (items sold in
+  // the past may have since had their cost price edited — we don't keep a
+  // per-sale cost snapshot, so this is "profit at today's costs", not a
+  // strict historical ledger).
+  function costOfLines(lines) {
+    return lines.reduce((s, l) => {
+      const it = itemById.get(l.stockId);
+      const cost = it ? Number(it.costPrice || 0) : 0;
+      return s + cost * l.qty;
+    }, 0);
+  }
+
+  const grossProfit = useMemo(() => {
+    const salesCost = todaysInvoices.reduce((s, inv) => s + costOfLines(inv.lines), 0);
+    const returnsCost = todaysReturns.reduce((s, r) => s + costOfLines(r.lines), 0);
+    return +((todaysSalesTotal - salesCost) - (todaysReturnsTotal - returnsCost)).toFixed(2);
+  }, [todaysInvoices, todaysReturns, todaysSalesTotal, todaysReturnsTotal, itemById]);
+
+  const margin = todaysSalesTotal > 0 ? (grossProfit / todaysSalesTotal) * 100 : 0;
+
+  const lowStockItems = useMemo(() => items.filter((it) => it.quantity <= (it.lowStockAt ?? 5)), [items]);
+
+  // ---- 7-day revenue trend ----
+  const trend = useMemo(() => {
+    const days = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() - i);
+      days.push({ label: d.toLocaleDateString("en-IN", { weekday: "short" }), key: dayKey(d) });
+    }
+    const totals = Object.fromEntries(days.map((d) => [d.key, 0]));
+    invoices.forEach((inv) => {
+      const d = parseAppDate(inv.date);
+      if (!d) return;
+      const k = dayKey(d);
+      if (k in totals) totals[k] += inv.total;
+    });
+    return days.map((d) => ({ name: d.label, revenue: +totals[d.key].toFixed(2) }));
+  }, [invoices]);
+
+  // ---- top-5 selling items (all-time, by quantity sold) ----
+  const topSellers = useMemo(() => {
+    const qtyById = new Map();
+    invoices.forEach((inv) => {
+      inv.lines.forEach((l) => {
+        qtyById.set(l.stockId, (qtyById.get(l.stockId) || 0) + l.qty);
+      });
+    });
+    return [...qtyById.entries()]
+      .map(([stockId, qty]) => {
+        const it = itemById.get(stockId);
+        return { stockId, qty, name: it ? it.name : "Deleted item", sku: it ? it.sku : "—" };
+      })
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 5);
+  }, [invoices, itemById]);
+
+  return (
+    <div>
+      <Header title="Dashboard" subtitle={`Today, ${today}`} />
+
+      <div className="sr-stat-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 22 }}>
+        <DashboardStatCard label="Today's sales" value={currency(todaysSalesTotal)} icon={TrendingUp} accent={GREEN} />
+        <DashboardStatCard label="Today's returns" value={currency(todaysReturnsTotal)} icon={TrendingDown} accent={todaysReturnsTotal > 0 ? RED : undefined} />
+        <DashboardStatCard
+          label="Gross profit"
+          value={currency(grossProfit)}
+          sub={todaysSalesTotal > 0 ? `${margin.toFixed(1)}% margin` : undefined}
+          icon={TrendingUp}
+          accent={grossProfit >= 0 ? GREEN : RED}
+        />
+        <DashboardStatCard
+          label="Low stock"
+          value={lowStockItems.length}
+          sub={lowStockItems.length > 0 ? "needs restocking" : "all good"}
+          icon={AlertTriangle}
+          accent={lowStockItems.length > 0 ? AMBER_DARK : undefined}
+          onClick={lowStockItems.length > 0 ? onGoToInventory : undefined}
+        />
+      </div>
+
+      <div className="sr-dash-grid" style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 16 }}>
+        <div style={{ background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 13, padding: "18px 20px", boxShadow: SHADOW_SM }}>
+          <div style={{ fontWeight: 700, fontSize: 14.5, fontFamily: "'Space Grotesk', sans-serif", marginBottom: 4 }}>Revenue, last 7 days</div>
+          <div style={{ color: SLATE, fontSize: 12, marginBottom: 12 }}>Total invoiced per day</div>
+          <div style={{ width: "100%", height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={trend} margin={{ top: 6, right: 6, left: -18, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="srRevenueFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={AMBER} stopOpacity={0.35} />
+                    <stop offset="100%" stopColor={AMBER} stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke={LINE} vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 11.5, fill: SLATE }} axisLine={{ stroke: LINE }} tickLine={false} />
+                <YAxis tick={{ fontSize: 11.5, fill: SLATE }} axisLine={false} tickLine={false} width={54} tickFormatter={(v) => `₹${v}`} />
+                <Tooltip
+                  formatter={(v) => [currency(v), "Revenue"]}
+                  contentStyle={{ background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 8, fontSize: 12.5 }}
+                  labelStyle={{ color: INK, fontWeight: 600 }}
+                />
+                <Area type="monotone" dataKey="revenue" stroke={AMBER_DARK} strokeWidth={2} fill="url(#srRevenueFill)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div style={{ background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 13, padding: "18px 20px", boxShadow: SHADOW_SM }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 14 }}>
+            <Trophy size={15} color={AMBER_DARK} />
+            <div style={{ fontWeight: 700, fontSize: 14.5, fontFamily: "'Space Grotesk', sans-serif" }}>Top sellers</div>
+          </div>
+          {topSellers.length === 0 ? (
+            <div style={{ color: SLATE, fontSize: 13 }}>No sales recorded yet.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {topSellers.map((t, idx) => (
+                <div key={t.stockId} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 22, height: 22, borderRadius: 6, background: PAPER_DIM, color: SLATE,
+                    display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11.5, fontWeight: 700, flexShrink: 0,
+                  }}>
+                    {idx + 1}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name}</div>
+                    <div style={{ fontSize: 11, color: SLATE, fontFamily: "'IBM Plex Mono', monospace" }}>{t.sku}</div>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace" }}>{t.qty}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Renamed from StatCard to avoid colliding with the existing StatCard
+// component (used elsewhere for the customer-detail view) — same data, a
+// dashboard-specific look with an icon and optional sub-label.
+function DashboardStatCard({ label, value, sub, icon: Icon, accent, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 12, padding: "15px 16px",
+        boxShadow: SHADOW_SM, cursor: onClick ? "pointer" : "default",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{ fontSize: 11.5, color: SLATE, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 }}>{label}</div>
+        {Icon && <Icon size={15} color={accent || SLATE} />}
+      </div>
+      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 19, color: accent || INK }}>{value}</div>
+      {sub && <div style={{ fontSize: 11.5, color: SLATE, marginTop: 3 }}>{sub}</div>}
     </div>
   );
 }
