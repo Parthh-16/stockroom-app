@@ -21,12 +21,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const TABLE = "stockroom_kv";
 
 // Keys that should stay local to this device/browser instead of shared.
+// Uses sessionStorage (not localStorage) on purpose: this keeps you
+// logged in through a page refresh, but requires logging in again once
+// the browser tab/window is fully closed — the expected behavior for a
+// shared work app, instead of staying logged in forever on any device.
 const LOCAL_ONLY_KEYS = new Set(["stockroom:session"]);
 const LOCAL_PREFIX = "stockroom_app_local::";
 
 function localGet(key) {
   try {
-    const raw = window.localStorage.getItem(LOCAL_PREFIX + key);
+    const raw = window.sessionStorage.getItem(LOCAL_PREFIX + key);
     if (raw === null) return null;
     return { key, value: raw, shared: false };
   } catch (e) {
@@ -36,7 +40,7 @@ function localGet(key) {
 
 function localSet(key, value) {
   try {
-    window.localStorage.setItem(LOCAL_PREFIX + key, value);
+    window.sessionStorage.setItem(LOCAL_PREFIX + key, value);
     return { key, value, shared: false };
   } catch (e) {
     return null;
@@ -45,8 +49,8 @@ function localSet(key, value) {
 
 function localDelete(key) {
   try {
-    const existed = window.localStorage.getItem(LOCAL_PREFIX + key) !== null;
-    window.localStorage.removeItem(LOCAL_PREFIX + key);
+    const existed = window.sessionStorage.getItem(LOCAL_PREFIX + key) !== null;
+    window.sessionStorage.removeItem(LOCAL_PREFIX + key);
     return { key, deleted: existed, shared: false };
   } catch (e) {
     return null;

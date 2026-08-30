@@ -1,28 +1,83 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { saveFileHandle, loadFileHandle, clearFileHandle } from "./fileHandleStore.js";
 import * as XLSX from "xlsx";
 import {
   Package, Plus, Pencil, Trash2, Search, Download, Receipt,
   ShoppingCart, X, Check, AlertTriangle, ChevronRight, Boxes,
   Printer, ArrowLeft, FileText, Link2, RefreshCw, Image as ImageIcon,
-  DatabaseBackup, UploadCloud, Users, RotateCcw, Minus, Share2, FileSpreadsheet, EyeOff, Eye
+  DatabaseBackup, UploadCloud, Users, RotateCcw, Minus, Share2, FileSpreadsheet, EyeOff, Eye, Sun, Moon
 } from "lucide-react";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');`;
 
-const INK = "#1C2431";
-const INK_SOFT = "#2A3444";
-const PAPER = "#FAF6EE";
-const PAPER_DIM = "#F1EBDD";
-const AMBER = "#C68A2E";
-const AMBER_DARK = "#A8741F";
-const AMBER_TINT = "#FBF0DC";
-const SLATE = "#5B6472";
-const GREEN = "#3F7A57";
-const RED = "#B5483D";
-const LINE = "#E4DCC8";
-const SHADOW_SM = "0 1px 2px rgba(28,36,49,0.06), 0 1px 1px rgba(28,36,49,0.04)";
-const SHADOW_MD = "0 6px 16px rgba(28,36,49,0.08), 0 2px 6px rgba(28,36,49,0.05)";
-const SHADOW_LG = "0 20px 48px rgba(28,36,49,0.16), 0 6px 18px rgba(28,36,49,0.08)";
+// Colors are CSS variables, not raw hex, so the whole app can switch
+// between light/dark by swapping one attribute on the root — every
+// existing `color: INK` / `background: PAPER` style below picks up
+// the new value automatically, with no other changes needed.
+const INK = "var(--sr-ink)";
+const INK_SOFT = "var(--sr-ink-soft)";
+const PAPER = "var(--sr-paper)";
+const PAPER_DIM = "var(--sr-paper-dim)";
+const AMBER = "var(--sr-amber)";
+const AMBER_DARK = "var(--sr-amber-dark)";
+const AMBER_TINT = "var(--sr-amber-tint)";
+const SLATE = "var(--sr-slate)";
+const GREEN = "var(--sr-green)";
+const RED = "var(--sr-red)";
+const LINE = "var(--sr-line)";
+const SHADOW_SM = "var(--sr-shadow-sm)";
+const SHADOW_MD = "var(--sr-shadow-md)";
+const SHADOW_LG = "var(--sr-shadow-lg)";
+
+const THEME_KEY = "stockroom:theme";
+
+// The sidebar is a fixed dark-navy panel by design in both themes — it
+// should NOT flip when the rest of the app switches to dark mode, so
+// it uses its own constant colors instead of the themed variables above.
+const SIDEBAR_BG = "#1C2431";
+const SIDEBAR_BG_ACTIVE = "#2A3444";
+const SIDEBAR_TEXT = "#FAF6EE";
+
+const THEME_VARS = `
+  :root, [data-sr-theme="light"] {
+    --sr-ink: #1C2431;
+    --sr-ink-soft: #2A3444;
+    --sr-paper: #FAF6EE;
+    --sr-paper-dim: #F1EBDD;
+    --sr-amber: #C68A2E;
+    --sr-amber-dark: #A8741F;
+    --sr-amber-tint: #FBF0DC;
+    --sr-slate: #5B6472;
+    --sr-green: #3F7A57;
+    --sr-red: #B5483D;
+    --sr-line: #E4DCC8;
+    --sr-shadow-sm: 0 1px 2px rgba(28,36,49,0.06), 0 1px 1px rgba(28,36,49,0.04);
+    --sr-shadow-md: 0 6px 16px rgba(28,36,49,0.08), 0 2px 6px rgba(28,36,49,0.05);
+    --sr-shadow-lg: 0 20px 48px rgba(28,36,49,0.16), 0 6px 18px rgba(28,36,49,0.08);
+    --sr-card-bg: #ffffff;
+    --sr-input-bg: #ffffff;
+    color-scheme: light;
+  }
+  [data-sr-theme="dark"] {
+    --sr-ink: #EDEFF4;
+    --sr-ink-soft: #D6DAE3;
+    --sr-paper: #171B24;
+    --sr-paper-dim: #1E232E;
+    --sr-amber: #D9A03F;
+    --sr-amber-dark: #E8B863;
+    --sr-amber-tint: #2E2515;
+    --sr-slate: #97A0B0;
+    --sr-green: #5FAE7C;
+    --sr-red: #E0685A;
+    --sr-line: #313847;
+    --sr-shadow-sm: 0 1px 2px rgba(0,0,0,0.35), 0 1px 1px rgba(0,0,0,0.25);
+    --sr-shadow-md: 0 6px 16px rgba(0,0,0,0.4), 0 2px 6px rgba(0,0,0,0.3);
+    --sr-shadow-lg: 0 20px 48px rgba(0,0,0,0.55), 0 6px 18px rgba(0,0,0,0.35);
+    --sr-card-bg: #212734;
+    --sr-input-bg: #1B202A;
+    color-scheme: dark;
+  }
+`;
 
 function uid(prefix = "") {
   return prefix + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -149,16 +204,34 @@ export default function StockroomApp() {
   const [returningInvoice, setReturningInvoice] = useState(null);
   const [fileHandle, setFileHandle] = useState(null);
   const [linkedName, setLinkedName] = useState("");
+  const [needsReconnect, setNeedsReconnect] = useState(false);
   const [savingFile, setSavingFile] = useState(false);
   const [pendingRestore, setPendingRestore] = useState(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [preparingCatalog, setPreparingCatalog] = useState(false);
   const [auth, setAuth] = useState(DEFAULT_AUTH);
   const [loggedIn, setLoggedIn] = useState(false);
+  const [theme, setTheme] = useState("light");
   const [accountOpen, setAccountOpen] = useState(false);
   const toastTimer = useRef(null);
   const restoreInputRef = useRef(null);
   const fsaSupported = typeof window !== "undefined" && !!window.showSaveFilePicker;
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(THEME_KEY);
+      if (saved === "dark" || saved === "light") setTheme(saved);
+      else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) setTheme("dark");
+    } catch (e) {}
+  }, []);
+
+  function toggleTheme() {
+    setTheme((t) => {
+      const next = t === "dark" ? "light" : "dark";
+      try { window.localStorage.setItem(THEME_KEY, next); } catch (e) {}
+      return next;
+    });
+  }
 
   useEffect(() => {
     (async () => {
@@ -183,6 +256,29 @@ export default function StockroomApp() {
       try {
         const s = await window.storage.get(SESSION_KEY);
         if (s?.value === "1") setLoggedIn(true);
+      } catch (e) {}
+
+      // ---- restore the previously linked Excel file, if any ----
+      try {
+        const handle = await loadFileHandle();
+        if (handle) {
+          const opts = { mode: "readwrite" };
+          let permission = await handle.queryPermission(opts);
+          if (permission === "prompt") {
+            // Some browsers allow a silent re-grant if it was already
+            // approved before; if not, this quietly fails and we ask
+            // the person to reconnect with one click instead of
+            // re-picking the file from scratch.
+            try { permission = await handle.requestPermission(opts); } catch (e) {}
+          }
+          if (permission === "granted") {
+            setFileHandle(handle);
+            setLinkedName(handle.name);
+          } else {
+            setLinkedName(handle.name);
+            setNeedsReconnect(true);
+          }
+        }
       } catch (e) {}
     })();
   }, []);
@@ -449,10 +545,33 @@ export default function StockroomApp() {
       });
       setFileHandle(handle);
       setLinkedName(handle.name);
+      setNeedsReconnect(false);
+      await saveFileHandle(handle);
       await writeToLinkedFile(handle, invoices, returns);
-      showToast(`Linked to "${handle.name}" — every sale and return now updates this file.`);
+      showToast(`Linked to "${handle.name}" — every sale and return now updates this file, and it'll stay linked next time you log in.`);
     } catch (e) {
       // user cancelled the picker; do nothing
+    }
+  }
+
+  // re-grant permission to the already-remembered file without making
+  // the person pick it again (only needed if the browser didn't allow
+  // a silent re-grant on load)
+  async function reconnectExcelFile() {
+    try {
+      const handle = await loadFileHandle();
+      if (!handle) return;
+      const permission = await handle.requestPermission({ mode: "readwrite" });
+      if (permission === "granted") {
+        setFileHandle(handle);
+        setLinkedName(handle.name);
+        setNeedsReconnect(false);
+        showToast(`Reconnected to "${handle.name}".`);
+      } else {
+        showToast("Permission wasn't granted — try linking the file again.", "warn");
+      }
+    } catch (e) {
+      showToast("Couldn't reconnect — try linking the file again.", "warn");
     }
   }
 
@@ -650,8 +769,9 @@ export default function StockroomApp() {
 
   if (!loggedIn) {
     return (
-      <div style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: PAPER, minHeight: "100dvh", color: INK }}>
+      <div data-sr-theme={theme} style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: PAPER, minHeight: "100dvh", color: INK }}>
         <style>{`
+          ${THEME_VARS}
           ${FONT_IMPORT}
           * { box-sizing: border-box; }
           button { font-family: inherit; cursor: pointer; }
@@ -666,14 +786,15 @@ export default function StockroomApp() {
             .sr-login-form { padding: 28px 24px !important; }
           }
         `}</style>
-        <LoginScreen onLogin={attemptLogin} onResetDefault={resetAuthToDefault} />
+        <LoginScreen onLogin={attemptLogin} onResetDefault={resetAuthToDefault} theme={theme} onToggleTheme={toggleTheme} />
       </div>
     );
   }
 
   return (
-    <div style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: PAPER, minHeight: "100dvh", color: INK, display: "flex" }}>
+    <div data-sr-theme={theme} style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: PAPER, minHeight: "100dvh", color: INK, display: "flex" }}>
       <style>{`
+        ${THEME_VARS}
         ${FONT_IMPORT}
         * { box-sizing: border-box; }
         .stockroom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -751,6 +872,8 @@ export default function StockroomApp() {
         username={(auth || DEFAULT_AUTH).username}
         onAccount={() => setAccountOpen(true)}
         onLogout={logout}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
       <input ref={restoreInputRef} type="file" accept="application/json" onChange={handleRestoreFile} style={{ display: "none" }} />
 
@@ -779,6 +902,8 @@ export default function StockroomApp() {
               onView={(inv) => setViewInvoice(inv)}
               onLink={linkExcelFile}
               linkedName={linkedName}
+              needsReconnect={needsReconnect}
+              onReconnect={reconnectExcelFile}
               fsaSupported={fsaSupported}
               savingFile={savingFile}
               onBackup={downloadBackup}
@@ -856,7 +981,7 @@ export default function StockroomApp() {
 
 // ---------------- Login ----------------
 
-function LoginScreen({ onLogin, onResetDefault }) {
+function LoginScreen({ onLogin, onResetDefault, theme, onToggleTheme }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -889,7 +1014,14 @@ function LoginScreen({ onLogin, onResetDefault }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, position: "relative" }}>
+      <button
+        onClick={onToggleTheme}
+        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        style={{ position: "absolute", top: 20, right: 20, width: 34, height: 34, borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", color: INK, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: SHADOW_SM }}
+      >
+        {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+      </button>
       <div
         className="sr-login-shell"
         style={{
@@ -901,14 +1033,14 @@ function LoginScreen({ onLogin, onResetDefault }) {
         <div
           className="sr-login-brand"
           style={{
-            flex: "0 0 42%", background: INK, color: PAPER, padding: "38px 32px",
+            flex: "0 0 42%", background: SIDEBAR_BG, color: SIDEBAR_TEXT, padding: "38px 32px",
             display: "flex", flexDirection: "column", justifyContent: "space-between", position: "relative", overflow: "hidden",
           }}
         >
-          <div style={{ position: "absolute", inset: 0, backgroundImage: `repeating-linear-gradient(${INK_SOFT} 0 1px, transparent 1px 34px)`, opacity: 0.5 }} />
+          <div style={{ position: "absolute", inset: 0, backgroundImage: `repeating-linear-gradient(${SIDEBAR_BG_ACTIVE} 0 1px, transparent 1px 34px)`, opacity: 0.5 }} />
           <div style={{ position: "relative" }}>
             <div style={{ width: 40, height: 40, background: `linear-gradient(155deg, ${AMBER} 0%, ${AMBER_DARK} 100%)`, borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 14px rgba(198,138,46,0.35)", marginBottom: 18 }}>
-              <Package size={21} color={INK} strokeWidth={2.4} />
+              <Package size={21} color={SIDEBAR_BG} strokeWidth={2.4} />
             </div>
             <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 22, letterSpacing: -0.2 }}>Stockroom</div>
             <div style={{ fontSize: 12.5, color: "#9CA5B4", marginTop: 6, lineHeight: 1.6, maxWidth: 220 }}>
@@ -921,7 +1053,7 @@ function LoginScreen({ onLogin, onResetDefault }) {
         </div>
 
         {/* right: form */}
-        <div style={{ flex: 1, background: "#fff", padding: "38px 34px" }} className="sr-login-form">
+        <div style={{ flex: 1, background: "var(--sr-card-bg)", padding: "38px 34px" }} className="sr-login-form">
           <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 19, marginBottom: 3 }}>Sign in</div>
           <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 22 }}>Enter your ID and password to continue.</div>
 
@@ -1054,7 +1186,7 @@ function AccountModal({ username, onClose, onSubmit }) {
 
 // ---------------- Sidebar ----------------
 
-function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, username, onAccount, onLogout }) {
+function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, username, onAccount, onLogout, theme, onToggleTheme }) {
   const items = [
     { key: "inventory", label: "Inventory", icon: Boxes, count: counts.items },
     { key: "sell", label: "New sale", icon: ShoppingCart },
@@ -1063,15 +1195,22 @@ function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, usernam
     { key: "customers", label: "Customers", icon: Users, count: counts.customers },
   ];
   return (
-    <aside className="sr-sidebar" style={{ width: 236, background: INK, color: PAPER, display: "flex", flexDirection: "column", padding: "26px 16px", flexShrink: 0 }}>
+    <aside className="sr-sidebar" style={{ width: 236, background: SIDEBAR_BG, color: SIDEBAR_TEXT, display: "flex", flexDirection: "column", padding: "26px 16px", flexShrink: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "0 8px 26px" }}>
         <div style={{ width: 36, height: 36, background: `linear-gradient(155deg, ${AMBER} 0%, ${AMBER_DARK} 100%)`, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 10px rgba(198,138,46,0.35)" }}>
-          <Package size={19} color={INK} strokeWidth={2.4} />
+          <Package size={19} color={SIDEBAR_BG} strokeWidth={2.4} />
         </div>
-        <div>
+        <div style={{ flex: 1 }}>
           <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 17, letterSpacing: 0.2 }}>Stockroom</div>
           <div style={{ fontSize: 11, color: "#8B93A3", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: 0.6 }}>LEDGER v1</div>
         </div>
+        <button
+          onClick={onToggleTheme}
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #333E52", background: "transparent", color: "#C7CCD6", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+        >
+          {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
       </div>
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -1085,8 +1224,8 @@ function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, usernam
               style={{
                 position: "relative", display: "flex", alignItems: "center", gap: 11, padding: "10px 12px 10px 15px",
                 borderRadius: 9, border: "none", textAlign: "left",
-                background: active ? INK_SOFT : "transparent",
-                color: active ? PAPER : "#A7AEBB",
+                background: active ? SIDEBAR_BG_ACTIVE : "transparent",
+                color: active ? SIDEBAR_TEXT : "#A7AEBB",
                 fontSize: 14.5, fontWeight: active ? 600 : 500,
               }}
             >
@@ -1197,7 +1336,7 @@ function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDe
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search by name, SKU, category…"
-          style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${LINE}`, background: "#fff", fontSize: 13.5, color: INK }}
+          style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", fontSize: 13.5, color: INK }}
         />
       </div>
 
@@ -1209,7 +1348,7 @@ function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDe
           action={allCount === 0 ? { label: "Add item", onClick: onAdd } : null}
         />
       ) : (
-        <div style={{ background: "#fff", border: `1px solid ${LINE}`, borderRadius: 13, overflow: "hidden", boxShadow: SHADOW_SM }}>
+        <div style={{ background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 13, overflow: "hidden", boxShadow: SHADOW_SM }}>
           <div className="sr-table-wrap">
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
             <thead>
@@ -1316,7 +1455,7 @@ function ShareStockListModal({ itemCount, preparingCatalog, onClose, onDownloadC
             </div>
             <button
               onClick={onDownloadPriceList}
-              style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}
+              style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", color: INK, fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}
             >
               <FileSpreadsheet size={14} /> Download Excel price list
             </button>
@@ -1470,7 +1609,7 @@ function SellView({ items, onComplete }) {
     <div>
       <Header title="New sale" subtitle="Sell stock and generate an invoice" />
       <div className="sr-sell-grid" style={{ display: "grid", gridTemplateColumns: "1.1fr 0.9fr", gap: 22, alignItems: "start" }}>
-        <div style={{ background: "#fff", border: `1px solid ${LINE}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 12, padding: 20 }}>
           <Field label="Customer name">
             <input value={customer} onChange={(e) => setCustomer(e.target.value)} style={inputStyle} placeholder="e.g. Ravi Sharma" />
           </Field>
@@ -1537,7 +1676,7 @@ function SellView({ items, onComplete }) {
 
 // ---------------- Invoices list ----------------
 
-function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedName, fsaSupported, savingFile, onBackup, onRestore }) {
+function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedName, needsReconnect, onReconnect, fsaSupported, savingFile, onBackup, onRestore }) {
   const returnedTotalFor = (invoiceId) =>
     (returns || []).filter((r) => r.invoiceId === invoiceId).reduce((s, r) => s + r.total, 0);
   return (
@@ -1557,6 +1696,18 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
         <IconButton icon={DatabaseBackup} label="Download backup" onClick={onBackup} variant="ghost" />
         <IconButton icon={UploadCloud} label="Restore backup" onClick={onRestore} variant="ghost" />
       </div>
+
+      {needsReconnect && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, fontSize: 12.5, color: AMBER_DARK, background: AMBER_TINT, border: `1px solid ${AMBER}`, borderRadius: 9, padding: "9px 13px" }}>
+          <AlertTriangle size={13} color={AMBER_DARK} />
+          <span style={{ flex: 1 }}>
+            <strong style={{ color: INK }}>{linkedName}</strong> is remembered, but this browser needs one click to reconnect before saving to it again.
+          </span>
+          <button onClick={onReconnect} style={{ border: "none", background: AMBER_DARK, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>
+            Reconnect
+          </button>
+        </div>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, fontSize: 12.5, color: SLATE, background: linkedName ? "#EEF6F0" : PAPER_DIM, border: `1px solid ${linkedName ? "#CFE6D5" : LINE}`, borderRadius: 9, padding: "9px 13px" }}>
         <Link2 size={13} color={linkedName ? GREEN : SLATE} />
@@ -1579,7 +1730,7 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
               <button
                 key={inv.id}
                 onClick={() => onView(inv)}
-                style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "#fff", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
+                style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
               >
                 <div style={{ width: 38, height: 38, borderRadius: 8, background: PAPER_DIM, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                   <Receipt size={17} color={AMBER} />
@@ -1673,7 +1824,7 @@ function CustomersView({ invoices, returns, onView }) {
               <button
                 key={inv.id}
                 onClick={() => onView(inv)}
-                style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "#fff", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
+                style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
               >
                 <div style={{ width: 38, height: 38, borderRadius: 8, background: PAPER_DIM, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                   <Receipt size={17} color={AMBER} />
@@ -1709,7 +1860,7 @@ function CustomersView({ invoices, returns, onView }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search customers by name…"
-          style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${LINE}`, background: "#fff", fontSize: 13.5, color: INK }}
+          style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", fontSize: 13.5, color: INK }}
         />
       </div>
 
@@ -1721,7 +1872,7 @@ function CustomersView({ invoices, returns, onView }) {
             <button
               key={c.key}
               onClick={() => setSelectedKey(c.key)}
-              style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "#fff", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
+              style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
             >
               <div style={{ width: 38, height: 38, borderRadius: 8, background: PAPER_DIM, color: AMBER, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 15 }}>
                 {c.name.slice(0, 1).toUpperCase()}
@@ -1744,7 +1895,7 @@ function CustomersView({ invoices, returns, onView }) {
 
 function StatCard({ label, value, accent }) {
   return (
-    <div style={{ background: "#fff", border: `1px solid ${LINE}`, borderRadius: 12, padding: "15px 16px", boxShadow: SHADOW_SM }}>
+    <div style={{ background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 12, padding: "15px 16px", boxShadow: SHADOW_SM }}>
       <div style={{ fontSize: 11.5, color: SLATE, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 5, fontWeight: 600 }}>{label}</div>
       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 19, color: accent || INK }}>{value}</div>
     </div>
@@ -1958,7 +2109,7 @@ function ReturnsView({ returns, onView }) {
             <button
               key={r.id}
               onClick={() => onView(r)}
-              style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "#fff", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
+              style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
             >
               <div style={{ width: 38, height: 38, borderRadius: 8, background: "#FBEAE7", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                 <RotateCcw size={17} color={RED} />
@@ -2048,7 +2199,7 @@ function ReturnDetailModal({ record, onClose }) {
 
 // ---------------- shared bits ----------------
 
-const inputStyle = { width: "100%", padding: "9px 11px", borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13.5, color: INK, background: "#fff", boxShadow: "inset 0 1px 2px rgba(28,36,49,0.03)" };
+const inputStyle = { width: "100%", padding: "9px 11px", borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 13.5, color: INK, background: "var(--sr-card-bg)", boxShadow: "inset 0 1px 2px rgba(28,36,49,0.03)" };
 
 function Header({ title, subtitle, actions }) {
   return (
@@ -2082,7 +2233,7 @@ function IconButton({ icon: Icon, label, onClick, variant }) {
       style={{
         display: "flex", alignItems: "center", gap: 7, padding: "9px 14px", borderRadius: 9,
         border: solid ? "none" : `1px solid ${hover ? SLATE : LINE}`,
-        background: solid ? (hover ? INK_SOFT : INK) : (hover ? PAPER_DIM : "#fff"),
+        background: solid ? (hover ? INK_SOFT : INK) : (hover ? PAPER_DIM : "var(--sr-card-bg)"),
         color: solid ? PAPER : INK, fontWeight: 600, fontSize: 13, whiteSpace: "nowrap",
         boxShadow: solid ? SHADOW_SM : "none",
         transform: hover ? "translateY(-1px)" : "none",
@@ -2106,7 +2257,7 @@ function TextButtonOutline({ children, onClick, disabled, muted }) {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        background: hover && !disabled ? PAPER_DIM : "#fff", border: `1px solid ${LINE}`, borderRadius: 8, padding: "8px 13px",
+        background: hover && !disabled ? PAPER_DIM : "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 8, padding: "8px 13px",
         color: muted ? RED : INK, fontSize: 12.5, fontWeight: 600, opacity: disabled ? 0.6 : 1,
       }}
     >
@@ -2117,7 +2268,7 @@ function TextButtonOutline({ children, onClick, disabled, muted }) {
 
 function EmptyState({ icon: Icon, title, body, action }) {
   return (
-    <div style={{ textAlign: "center", padding: "56px 20px", border: `1.5px dashed ${LINE}`, borderRadius: 14, background: "#fff" }}>
+    <div style={{ textAlign: "center", padding: "56px 20px", border: `1.5px dashed ${LINE}`, borderRadius: 14, background: "var(--sr-card-bg)" }}>
       <div style={{ width: 46, height: 46, borderRadius: 12, background: AMBER_TINT, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px" }}>
         <Icon size={22} color={AMBER_DARK} />
       </div>
