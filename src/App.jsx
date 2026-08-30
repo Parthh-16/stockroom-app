@@ -6,7 +6,7 @@ import {
   ShoppingCart, X, Check, AlertTriangle, ChevronRight, Boxes,
   Printer, ArrowLeft, FileText, Link2, RefreshCw, Image as ImageIcon,
   DatabaseBackup, UploadCloud, Users, RotateCcw, Minus, Share2, FileSpreadsheet, EyeOff, Eye, Sun, Moon,
-  LayoutDashboard, TrendingUp, TrendingDown, Trophy, MessageCircle
+  LayoutDashboard, TrendingUp, TrendingDown, Trophy, MessageCircle, Wallet
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -123,6 +123,30 @@ function unitLabel(unit, qty) {
   return opt.label.toLowerCase();
 }
 
+// ---- payments ----
+const PAYMENT_MODES = ["Cash", "GPay"];
+function paidAmount(inv) {
+  return +((inv.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0)).toFixed(2);
+}
+function balanceDue(inv) {
+  return +Math.max(0, (inv.total || 0) - paidAmount(inv)).toFixed(2);
+}
+function paymentStatus(inv) {
+  const paid = paidAmount(inv);
+  if (paid <= 0.004) return "unpaid";
+  if (paid >= (inv.total || 0) - 0.004) return "paid";
+  return "partial";
+}
+function paymentStatusMeta(status) {
+  if (status === "paid") return { label: "Paid", color: GREEN, bg: "#EAF6EC", border: "#CFE6D5" };
+  if (status === "partial") return { label: "Partial", color: AMBER_DARK, bg: AMBER_TINT, border: AMBER };
+  return { label: "Unpaid", color: RED, bg: "#FBEAEA", border: "#F0C7C7" };
+}
+function paymentModesSummary(inv) {
+  const modes = Array.from(new Set((inv.payments || []).map((p) => p.mode).filter(Boolean)));
+  return modes.join(" + ");
+}
+
 const AUTH_KEY = "stockroom:auth"; // legacy single-account key, kept only for one-time migration
 const USERS_KEY = "stockroom:users";
 const SESSION_KEY = "stockroom:session";
@@ -216,6 +240,10 @@ function buildWorkbook(invoices, returns = []) {
         "Unit Price": l.price,
         "Line Total": +(l.qty * l.price).toFixed(2),
         "Invoice Total": inv.total,
+        "Amount Paid": paidAmount(inv),
+        "Balance Due": balanceDue(inv),
+        "Payment Status": paymentStatusMeta(paymentStatus(inv)).label,
+        "Payment Mode(s)": paymentModesSummary(inv),
       });
     });
   });
@@ -832,10 +860,14 @@ export default function StockroomApp() {
   }
 
   // ---- sale / invoice ----
-  async function completeSale(customer, lines) {
+  async function completeSale(customer, lines, payment) {
     const number = "INV-" + String(seq).padStart(4, "0");
     const total = +lines.reduce((s, l) => s + l.qty * l.price, 0).toFixed(2);
-    const invoice = { id: uid("inv_"), number, customer, date: todayStr(), lines, total, createdBy: currentUser?.username || "", createdByRole: currentUser?.role || "admin" };
+    const payments = [];
+    if (payment && Number(payment.amount) > 0) {
+      payments.push({ id: uid("pay_"), amount: +Number(payment.amount).toFixed(2), mode: payment.mode || "Cash", date: todayStr() });
+    }
+    const invoice = { id: uid("inv_"), number, customer, date: todayStr(), lines, total, payments, createdBy: currentUser?.username || "", createdByRole: currentUser?.role || "admin" };
     const nextInvoices = [invoice, ...invoices];
 
     setItems((prev) =>
@@ -854,6 +886,23 @@ export default function StockroomApp() {
       result === "linked"
         ? `${number} created — saved to "${linkedName}"`
         : `${number} created — sales log downloaded`
+    );
+  }
+
+  async function recordPayment(invoice, amount, mode) {
+    const amt = +Number(amount).toFixed(2);
+    if (!amt || amt <= 0) return;
+    const cappedAmt = Math.min(amt, balanceDue(invoice));
+    const payment = { id: uid("pay_"), amount: cappedAmt, mode: mode || "Cash", date: todayStr() };
+    const updated = { ...invoice, payments: [...(invoice.payments || []), payment] };
+    const nextInvoices = invoices.map((inv) => (inv.id === invoice.id ? updated : inv));
+    setInvoices(nextInvoices);
+    setViewInvoice(updated);
+    const result = await persistSalesLog(nextInvoices, returns);
+    showToast(
+      result === "linked"
+        ? `Payment of ${currency(cappedAmt)} recorded — saved to "${linkedName}"`
+        : `Payment of ${currency(cappedAmt)} recorded — sales log downloaded`
     );
   }
 
@@ -979,7 +1028,41 @@ export default function StockroomApp() {
       doc.text("Total", 400, y);
       doc.text(currency(invoice.total), rightX, y, { align: "right" });
 
-      y += 40;
+      const paid = paidAmount(invoice);
+      const due = balanceDue(invoice);
+      if (paid > 0 || due > 0) {
+        y += 18;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10.5);
+        doc.setTextColor(91, 100, 114);
+        doc.text("Paid", 400, y);
+        doc.text(currency(paid), rightX, y, { align: "right" });
+        y += 16;
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(due > 0 ? 176 : 91, due > 0 ? 46 : 100, due > 0 ? 46 : 114);
+        doc.text("Balance due", 400, y);
+        doc.text(currency(due), rightX, y, { align: "right" });
+        doc.setTextColor(28, 36, 49);
+      }
+
+      if ((invoice.payments || []).length > 0) {
+        y += 26;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9.5);
+        doc.setTextColor(91, 100, 114);
+        doc.text("PAYMENTS RECEIVED", marginX, y);
+        y += 14;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.setTextColor(28, 36, 49);
+        invoice.payments.forEach((p) => {
+          doc.text(`${p.date} · ${p.mode}`, marginX, y);
+          doc.text(currency(p.amount), rightX, y, { align: "right" });
+          y += 15;
+        });
+      }
+
+      y += 26;
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9.5);
       doc.setTextColor(91, 100, 114);
@@ -1209,6 +1292,7 @@ export default function StockroomApp() {
           onSharePdf={() => shareInvoicePdf(viewInvoice)}
           onStartReturn={() => setReturningInvoice(viewInvoice)}
           returnedQtyFor={returnedQtyFor}
+          onRecordPayment={(amount, mode) => recordPayment(viewInvoice, amount, mode)}
         />
       )}
       {returningInvoice && (
@@ -2008,6 +2092,9 @@ function SellView({ items, onComplete }) {
   const [pickQty, setPickQty] = useState(1);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [paymentMode, setPaymentMode] = useState("Cash");
+  const [paymentType, setPaymentType] = useState("full"); // "full" | "partial" | "none"
+  const [amountPaidNow, setAmountPaidNow] = useState("");
 
   const available = items.filter((i) => i.quantity > 0);
   const cartLines = cart.map((c) => {
@@ -2015,6 +2102,9 @@ function SellView({ items, onComplete }) {
     return it ? { stockId: it.id, sku: it.sku, name: it.name, price: it.price, qty: c.qty, unit: it.unit || "pcs", image: it.image || null } : null;
   }).filter(Boolean);
   const total = cartLines.reduce((s, l) => s + l.qty * l.price, 0);
+  const effectivePaid =
+    paymentType === "full" ? total : paymentType === "partial" ? Math.min(Number(amountPaidNow) || 0, total) : 0;
+  const balanceAfter = +(total - effectivePaid).toFixed(2);
 
   function addToCart() {
     setError("");
@@ -2039,11 +2129,18 @@ function SellView({ items, onComplete }) {
     setError("");
     if (!customer.trim()) return setError("Enter a customer name.");
     if (cartLines.length === 0) return setError("Add at least one item to the sale.");
+    if (paymentType === "partial") {
+      const amt = Number(amountPaidNow);
+      if (!amountPaidNow || amt <= 0) return setError("Enter the amount paid now, or choose Full payment / Pay later.");
+      if (amt > total) return setError("Amount paid can't be more than the sale total.");
+    }
     setBusy(true);
-    await onComplete(customer.trim(), cartLines);
+    await onComplete(customer.trim(), cartLines, paymentType === "none" ? null : { amount: effectivePaid, mode: paymentMode });
     setBusy(false);
     setCustomer("");
     setCart([]);
+    setPaymentType("full");
+    setAmountPaidNow("");
   }
 
   return (
@@ -2099,6 +2196,80 @@ function SellView({ items, onComplete }) {
           <div style={{ fontSize: 13, color: "#C7CCD6", marginBottom: 18, lineHeight: 1.6 }}>
             {cartLines.length} line{cartLines.length === 1 ? "" : "s"} · {cartLines.reduce((s, l) => s + l.qty, 0)} unit{cartLines.reduce((s, l) => s + l.qty, 0) === 1 ? "" : "s"} · customer {customer.trim() ? `"${customer.trim()}"` : "not set"}
           </div>
+
+          <div style={{ borderTop: "1px solid rgba(255,255,255,0.12)", paddingTop: 16, marginBottom: 18 }}>
+            <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.5, color: "#9AA3B2", marginBottom: 8 }}>Payment</div>
+            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              {[
+                { key: "full", label: "Paid in full" },
+                { key: "partial", label: "Partial payment" },
+                { key: "none", label: "Pay later" },
+              ].map((opt) => {
+                const active = paymentType === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setPaymentType(opt.key)}
+                    style={{
+                      flex: 1, padding: "7px 4px", borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                      border: `1px solid ${active ? AMBER : "rgba(255,255,255,0.18)"}`,
+                      background: active ? AMBER_TINT : "transparent",
+                      color: active ? AMBER_DARK : "#C7CCD6",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {paymentType === "partial" && (
+              <div style={{ marginBottom: 10 }}>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={amountPaidNow}
+                  onChange={(e) => setAmountPaidNow(e.target.value)}
+                  placeholder={`Amount paid now (of ${currency(total)})`}
+                  style={{ ...inputStyle, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.18)", color: PAPER }}
+                />
+              </div>
+            )}
+
+            {paymentType !== "none" && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+                {PAYMENT_MODES.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setPaymentMode(m)}
+                    style={{
+                      flex: 1, padding: "7px 4px", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                      border: `1px solid ${paymentMode === m ? AMBER : "rgba(255,255,255,0.18)"}`,
+                      background: paymentMode === m ? AMBER_TINT : "transparent",
+                      color: paymentMode === m ? AMBER_DARK : "#C7CCD6",
+                    }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {paymentType === "partial" && (
+              <div style={{ fontSize: 12, color: balanceAfter > 0 ? "#F0B4B4" : "#9AA3B2", marginTop: 6 }}>
+                Balance due after this payment: <strong>{currency(balanceAfter)}</strong>
+              </div>
+            )}
+            {paymentType === "none" && (
+              <div style={{ fontSize: 12, color: "#F0B4B4", marginTop: 2 }}>
+                Full amount ({currency(total)}) will be recorded as due.
+              </div>
+            )}
+          </div>
+
           <button
             onClick={finalize}
             disabled={busy}
@@ -2204,6 +2375,9 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
           {visibleInvoices.map((inv) => {
             const returnedAmt = returnedTotalFor(inv.id);
             const staffMade = inv.createdByRole === "staff";
+            const payStatus = paymentStatus(inv);
+            const payMeta = paymentStatusMeta(payStatus);
+            const due = balanceDue(inv);
             return (
               <button
                 key={inv.id}
@@ -2227,11 +2401,19 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
                         Staff{inv.createdBy ? ` · ${inv.createdBy}` : ""}
                       </span>
                     )}
+                    <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: payMeta.color, background: payMeta.bg, border: `1px solid ${payMeta.border}`, borderRadius: 5, padding: "1px 6px" }}>
+                      {payMeta.label}
+                    </span>
                   </div>
                   <div style={{ fontSize: 12.5, color: SLATE }}>{inv.customer} · {inv.date} · {inv.lines.length} item{inv.lines.length === 1 ? "" : "s"}</div>
                   {returnedAmt > 0 && (
                     <div style={{ fontSize: 11, color: RED, marginTop: 2, display: "flex", alignItems: "center", gap: 3 }}>
                       <RotateCcw size={10} /> {currency(returnedAmt)} returned
+                    </div>
+                  )}
+                  {due > 0 && (
+                    <div style={{ fontSize: 11, color: AMBER_DARK, marginTop: 2 }}>
+                      {currency(due)} due
                     </div>
                   )}
                 </div>
@@ -2251,6 +2433,7 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
 function CustomersView({ invoices, returns, onView }) {
   const [search, setSearch] = useState("");
   const [selectedKey, setSelectedKey] = useState(null);
+  const [historySearch, setHistorySearch] = useState("");
 
   const customers = useMemo(() => {
     const map = new Map();
@@ -2277,14 +2460,27 @@ function CustomersView({ invoices, returns, onView }) {
     return customers.filter((c) => c.name.toLowerCase().includes(q));
   }, [customers, search]);
 
+  function searchAndOpen() {
+    if (filtered.length > 0) setSelectedKey(filtered[0].key);
+  }
+
   const selected = customers.find((c) => c.key === selectedKey);
   const returnedTotalFor = (invoiceId) => (returns || []).filter((r) => r.invoiceId === invoiceId).reduce((s, r) => s + r.total, 0);
 
   if (selected) {
     const netSpent = selected.total - (selected.returnedTotal || 0);
+    const totalDue = +selected.orders.reduce((s, inv) => s + balanceDue(inv), 0).toFixed(2);
+    const hq = historySearch.trim().toLowerCase();
+    const historyOrders = hq
+      ? selected.orders.filter((inv) =>
+          inv.number.toLowerCase().includes(hq) ||
+          inv.date.toLowerCase().includes(hq) ||
+          inv.lines.some((l) => l.name.toLowerCase().includes(hq) || (l.sku || "").toLowerCase().includes(hq))
+        )
+      : selected.orders;
     return (
       <div>
-        <button onClick={() => setSelectedKey(null)} style={{ background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, color: SLATE, fontSize: 13, padding: 0, marginBottom: 18 }}>
+        <button onClick={() => { setSelectedKey(null); setHistorySearch(""); }} style={{ background: "none", border: "none", display: "flex", alignItems: "center", gap: 6, color: SLATE, fontSize: 13, padding: 0, marginBottom: 18 }}>
           <ArrowLeft size={15} /> All customers
         </button>
 
@@ -2300,17 +2496,38 @@ function CustomersView({ invoices, returns, onView }) {
           </div>
         </div>
 
-        <div className="sr-stat-grid" style={{ display: "grid", gridTemplateColumns: selected.returnedTotal ? "repeat(4, 1fr)" : "repeat(3, 1fr)", gap: 12, marginBottom: 24 }}>
+        <div className="sr-stat-grid" style={{ display: "grid", gridTemplateColumns: `repeat(${3 + (selected.returnedTotal > 0 ? 1 : 0) + (totalDue > 0 ? 1 : 0)}, 1fr)`, gap: 12, marginBottom: 24 }}>
           <StatCard label="Total spent" value={currency(selected.total)} />
           <StatCard label="Orders" value={selected.orders.length} />
           <StatCard label="Avg. order value" value={currency(selected.total / selected.orders.length)} />
           {selected.returnedTotal > 0 && <StatCard label="Net spent" value={currency(netSpent)} accent={RED} />}
+          {totalDue > 0 && <StatCard label="Balance due" value={currency(totalDue)} accent={AMBER_DARK} />}
         </div>
 
-        <div style={{ fontSize: 12.5, fontWeight: 600, color: SLATE, marginBottom: 10, textTransform: "uppercase", letterSpacing: 0.4 }}>Purchase history</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: SLATE, textTransform: "uppercase", letterSpacing: 0.4 }}>
+            Purchase history {hq && `(${historyOrders.length} of ${selected.orders.length})`}
+          </div>
+          {selected.orders.length > 3 && (
+            <div className="sr-search" style={{ position: "relative", maxWidth: 240 }}>
+              <Search size={13} color={SLATE} style={{ position: "absolute", left: 10, top: 9 }} />
+              <input
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                placeholder="Search this history…"
+                style={{ width: "100%", padding: "7px 10px 7px 28px", borderRadius: 8, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", fontSize: 12.5, color: INK }}
+              />
+            </div>
+          )}
+        </div>
+        {historyOrders.length === 0 ? (
+          <EmptyState icon={Receipt} title="No matching orders" body="Try a different invoice number, item, or date." />
+        ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {selected.orders.map((inv) => {
+          {historyOrders.map((inv) => {
             const returnedAmt = returnedTotalFor(inv.id);
+            const due = balanceDue(inv);
+            const payMeta = paymentStatusMeta(paymentStatus(inv));
             return (
               <button
                 key={inv.id}
@@ -2321,7 +2538,12 @@ function CustomersView({ invoices, returns, onView }) {
                   <Receipt size={17} color={AMBER} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", fontSize: 13 }}>{inv.number}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", fontSize: 13 }}>{inv.number}</div>
+                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: payMeta.color, background: payMeta.bg, border: `1px solid ${payMeta.border}`, borderRadius: 5, padding: "1px 6px" }}>
+                      {payMeta.label}
+                    </span>
+                  </div>
                   <div style={{ fontSize: 12.5, color: SLATE }}>
                     {inv.date} · {inv.lines.map((l) => `${l.qty}× ${l.name}`).join(", ")}
                   </div>
@@ -2330,6 +2552,9 @@ function CustomersView({ invoices, returns, onView }) {
                       <RotateCcw size={10} /> {currency(returnedAmt)} returned
                     </div>
                   )}
+                  {due > 0 && (
+                    <div style={{ fontSize: 11, color: AMBER_DARK, marginTop: 2 }}>{currency(due)} due</div>
+                  )}
                 </div>
                 <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 15 }}>{currency(inv.total)}</div>
                 <ChevronRight size={16} color={SLATE} />
@@ -2337,6 +2562,7 @@ function CustomersView({ invoices, returns, onView }) {
             );
           })}
         </div>
+        )}
       </div>
     );
   }
@@ -2345,14 +2571,20 @@ function CustomersView({ invoices, returns, onView }) {
     <div>
       <Header title="Customers" subtitle={`${customers.length} customer${customers.length === 1 ? "" : "s"} on record`} />
 
-      <div className="sr-search" style={{ position: "relative", maxWidth: 340, marginBottom: 18 }}>
-        <Search size={15} color={SLATE} style={{ position: "absolute", left: 12, top: 12 }} />
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search customers by name…"
-          style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", fontSize: 13.5, color: INK }}
-        />
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, alignItems: "center" }}>
+        <div className="sr-search" style={{ position: "relative", maxWidth: 340, flex: 1 }}>
+          <Search size={15} color={SLATE} style={{ position: "absolute", left: 12, top: 12 }} />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") searchAndOpen(); }}
+            placeholder="Search customer by name for full history…"
+            style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", fontSize: 13.5, color: INK }}
+          />
+        </div>
+        {search.trim() && filtered.length > 0 && (
+          <TextButtonOutline onClick={searchAndOpen}>View history</TextButtonOutline>
+        )}
       </div>
 
       {filtered.length === 0 ? (
@@ -2566,9 +2798,14 @@ function StatCard({ label, value, accent }) {
   );
 }
 
-function InvoiceModal({ invoice, onClose, onDownloadPdf, onSharePdf, onStartReturn, returnedQtyFor }) {
+function InvoiceModal({ invoice, onClose, onDownloadPdf, onSharePdf, onStartReturn, returnedQtyFor, onRecordPayment }) {
   const [downloading, setDownloading] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [recordingPayment, setRecordingPayment] = useState(false);
+  const [payAmount, setPayAmount] = useState("");
+  const [payMode, setPayMode] = useState("Cash");
+  const [payBusy, setPayBusy] = useState(false);
+  const [payError, setPayError] = useState("");
   async function handleDownload() {
     setDownloading(true);
     await onDownloadPdf();
@@ -2580,6 +2817,22 @@ function InvoiceModal({ invoice, onClose, onDownloadPdf, onSharePdf, onStartRetu
     setSharing(false);
   }
   const totalReturnable = invoice.lines.reduce((s, l) => s + (l.qty - (returnedQtyFor ? returnedQtyFor(invoice.id, l.stockId) : 0)), 0);
+  const paid = paidAmount(invoice);
+  const due = balanceDue(invoice);
+  const payStatus = paymentStatus(invoice);
+  const payMeta = paymentStatusMeta(payStatus);
+
+  async function submitPayment() {
+    setPayError("");
+    const amt = Number(payAmount);
+    if (!payAmount || amt <= 0) return setPayError("Enter a valid amount.");
+    if (amt > due + 0.004) return setPayError(`Amount can't exceed the balance due (${currency(due)}).`);
+    setPayBusy(true);
+    await onRecordPayment(amt, payMode);
+    setPayBusy(false);
+    setRecordingPayment(false);
+    setPayAmount("");
+  }
   return (
     <Overlay onClose={onClose}>
       <div className="sr-modal-pad" style={{ padding: "24px 26px" }}>
@@ -2615,6 +2868,9 @@ function InvoiceModal({ invoice, onClose, onDownloadPdf, onSharePdf, onStartRetu
                 Staff sale{invoice.createdBy ? ` · ${invoice.createdBy}` : ""}
               </div>
             )}
+            <div style={{ marginTop: 4, display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: payMeta.color, background: payMeta.bg, border: `1px solid ${payMeta.border}`, borderRadius: 5, padding: "2px 7px", marginLeft: invoice.createdByRole === "staff" ? 6 : 0 }}>
+              {payMeta.label}
+            </div>
           </div>
         </div>
 
@@ -2658,12 +2914,83 @@ function InvoiceModal({ invoice, onClose, onDownloadPdf, onSharePdf, onStartRetu
         </table>
 
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
-          <div style={{ width: 200 }}>
+          <div style={{ width: 220 }}>
             <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", borderTop: `2px solid ${INK}`, fontWeight: 700, fontSize: 16 }}>
               <span>Total</span>
               <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{currency(invoice.total)}</span>
             </div>
+            {(paid > 0 || due > 0) && (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: SLATE }}>
+                  <span>Paid</span>
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: GREEN, fontWeight: 600 }}>{currency(paid)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: SLATE }}>
+                  <span>Balance due</span>
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: due > 0 ? RED : SLATE, fontWeight: 600 }}>{currency(due)}</span>
+                </div>
+              </>
+            )}
           </div>
+        </div>
+
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px dashed ${LINE}` }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: (invoice.payments || []).length > 0 ? 10 : 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: SLATE }}>Payments</div>
+            {onRecordPayment && due > 0 && !recordingPayment && (
+              <TextButton onClick={() => { setRecordingPayment(true); setPayAmount(String(due)); }}>Record payment</TextButton>
+            )}
+          </div>
+
+          {(invoice.payments || []).length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: recordingPayment ? 12 : 0 }}>
+              {invoice.payments.map((p) => (
+                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, color: INK, background: PAPER_DIM, borderRadius: 7, padding: "6px 10px" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <Wallet size={12} color={SLATE} /> {p.mode} <span style={{ color: SLATE }}>· {p.date}</span>
+                  </span>
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{currency(p.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {recordingPayment && (
+            <div style={{ border: `1px solid ${LINE}`, borderRadius: 9, padding: 12, marginTop: 6 }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input
+                  type="number" min="0" step="0.01" max={due}
+                  value={payAmount}
+                  onChange={(e) => setPayAmount(e.target.value)}
+                  placeholder={`Amount (max ${currency(due)})`}
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <select value={payMode} onChange={(e) => setPayMode(e.target.value)} style={{ ...inputStyle, width: 110 }}>
+                  {PAYMENT_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              {payError && <div style={{ color: RED, fontSize: 12, marginBottom: 8 }}>{payError}</div>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={submitPayment}
+                  disabled={payBusy}
+                  style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: AMBER, color: INK, fontWeight: 700, fontSize: 12.5, opacity: payBusy ? 0.7 : 1 }}
+                >
+                  {payBusy ? "Saving…" : "Save payment"}
+                </button>
+                <button
+                  onClick={() => { setRecordingPayment(false); setPayError(""); }}
+                  style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "none", color: SLATE, fontWeight: 600, fontSize: 12.5 }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(invoice.payments || []).length === 0 && !recordingPayment && (
+            <div style={{ fontSize: 12.5, color: SLATE }}>No payments recorded yet.</div>
+          )}
         </div>
 
         {onStartReturn && (
@@ -2813,6 +3140,7 @@ function ReturnsView({ returns, onView }) {
 function LedgerView({ invoices, returns, onViewInvoice, onViewReturn }) {
   const [typeFilter, setTypeFilter] = useState("all"); // "all" | "sale" | "return"
   const [creatorFilter, setCreatorFilter] = useState("all"); // "all" | "staff" | "admin"
+  const [payFilter, setPayFilter] = useState("all"); // "all" | "paid" | "partial" | "unpaid"
   const [search, setSearch] = useState("");
 
   const entries = useMemo(() => {
@@ -2825,6 +3153,10 @@ function LedgerView({ invoices, returns, onViewInvoice, onViewReturn }) {
       amount: inv.total,
       createdBy: inv.createdBy,
       createdByRole: inv.createdByRole,
+      payStatus: paymentStatus(inv),
+      paid: paidAmount(inv),
+      due: balanceDue(inv),
+      paymentModes: paymentModesSummary(inv),
       raw: inv,
     }));
     const returnEntries = returns.map((r) => ({
@@ -2857,6 +3189,10 @@ function LedgerView({ invoices, returns, onViewInvoice, onViewReturn }) {
       if (creatorFilter === "staff" && !isStaffEntry) return false;
       if (creatorFilter === "admin" && isStaffEntry) return false;
     }
+    if (payFilter !== "all") {
+      if (e.kind !== "sale") return false;
+      if (e.payStatus !== payFilter) return false;
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       const hay = `${e.number} ${e.party} ${e.createdBy || ""}`.toLowerCase();
@@ -2868,15 +3204,17 @@ function LedgerView({ invoices, returns, onViewInvoice, onViewReturn }) {
   const totalSales = +entries.filter((e) => e.kind === "sale").reduce((s, e) => s + e.amount, 0).toFixed(2);
   const totalReturns = +entries.filter((e) => e.kind === "return").reduce((s, e) => s - e.amount, 0).toFixed(2);
   const net = +(totalSales - totalReturns).toFixed(2);
+  const totalDue = +entries.filter((e) => e.kind === "sale").reduce((s, e) => s + e.due, 0).toFixed(2);
 
   return (
     <div>
       <Header title="Ledger" subtitle={`${filtered.length} of ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`} />
 
-      <div className="sr-stat-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 20 }}>
+      <div className="sr-stat-grid" style={{ display: "grid", gridTemplateColumns: `repeat(${totalDue > 0 ? 4 : 3}, 1fr)`, gap: 14, marginBottom: 20 }}>
         <StatCard label="Total sales" value={currency(totalSales)} accent={GREEN} />
         <StatCard label="Total returns" value={currency(totalReturns)} accent={totalReturns > 0 ? RED : undefined} />
         <StatCard label="Net" value={currency(net)} />
+        {totalDue > 0 && <StatCard label="Amount due" value={currency(totalDue)} accent={AMBER_DARK} />}
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
@@ -2924,6 +3262,32 @@ function LedgerView({ invoices, returns, onViewInvoice, onViewReturn }) {
             );
           })}
         </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[
+            { key: "all", label: "All payments" },
+            { key: "paid", label: "Paid" },
+            { key: "partial", label: "Partial" },
+            { key: "unpaid", label: "Unpaid" },
+          ].map((opt) => {
+            const active = payFilter === opt.key;
+            const meta = opt.key === "all" ? null : paymentStatusMeta(opt.key);
+            return (
+              <button
+                key={opt.key}
+                onClick={() => setPayFilter(opt.key)}
+                style={{
+                  padding: "6px 13px", borderRadius: 999,
+                  border: `1px solid ${active ? (meta ? meta.border : INK) : LINE}`,
+                  background: active ? (meta ? meta.bg : INK) : "var(--sr-card-bg)",
+                  color: active ? (meta ? meta.color : PAPER) : SLATE,
+                  fontSize: 12.5, fontWeight: 600,
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
         <div className="sr-search" style={{ position: "relative", maxWidth: 260, flex: 1, minWidth: 160 }}>
           <Search size={14} color={SLATE} style={{ position: "absolute", left: 11, top: 10 }} />
           <input
@@ -2947,7 +3311,7 @@ function LedgerView({ invoices, returns, onViewInvoice, onViewReturn }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
             <thead>
               <tr style={{ background: PAPER_DIM, textAlign: "left" }}>
-                {["Date", "Entry", "Party", "By", "Amount"].map((h, i) => (
+                {["Date", "Entry", "Party", "By", "Payment", "Amount"].map((h, i) => (
                   <th key={i} style={{ padding: "11px 16px", fontWeight: 600, fontSize: 11.5, letterSpacing: 0.4, textTransform: "uppercase", color: SLATE, borderBottom: `1px solid ${LINE}` }}>
                     {h}
                   </th>
@@ -2979,6 +3343,23 @@ function LedgerView({ invoices, returns, onViewInvoice, onViewReturn }) {
                         <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: AMBER_DARK, border: `1px solid ${AMBER}`, borderRadius: 5, padding: "1px 5px" }}>
                           Staff
                         </span>
+                      )}
+                    </td>
+                    <td style={{ padding: "12px 16px", fontSize: 12.5 }}>
+                      {e.kind === "sale" ? (
+                        <div>
+                          <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: paymentStatusMeta(e.payStatus).color, background: paymentStatusMeta(e.payStatus).bg, border: `1px solid ${paymentStatusMeta(e.payStatus).border}`, borderRadius: 5, padding: "1px 6px" }}>
+                            {paymentStatusMeta(e.payStatus).label}
+                          </span>
+                          {e.paymentModes && (
+                            <span style={{ marginLeft: 6, color: SLATE }}>{e.paymentModes}</span>
+                          )}
+                          {e.due > 0 && (
+                            <div style={{ color: AMBER_DARK, fontSize: 11, marginTop: 2 }}>{currency(e.due)} due</div>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ color: SLATE }}>—</span>
                       )}
                     </td>
                     <td style={{ padding: "12px 16px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: e.amount < 0 ? RED : GREEN }}>
