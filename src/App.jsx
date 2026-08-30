@@ -127,9 +127,10 @@ const AUTH_KEY = "stockroom:auth"; // legacy single-account key, kept only for o
 const USERS_KEY = "stockroom:users";
 const SESSION_KEY = "stockroom:session";
 const DEFAULT_AUTH = { username: "Admin", password: "Admin@123" };
-// Staff accounts only ever see these tabs — everything else (Dashboard,
-// Inventory, Returns, Customers) is Admin-only.
-const STAFF_ALLOWED_TABS = ["sell", "invoices"];
+// Staff accounts only ever see these tabs — everything else (Returns,
+// Customers) is Admin-only. Inventory is visible to Staff but read-only
+// (enforced in InventoryView via the isAdmin prop).
+const STAFF_ALLOWED_TABS = ["sell", "invoices", "inventory"];
 function defaultAdminUser() {
   return { id: "user-admin-default", username: DEFAULT_AUTH.username, password: DEFAULT_AUTH.password, role: "admin" };
 }
@@ -333,7 +334,7 @@ export default function StockroomApp() {
       if (e.key === "/") {
         e.preventDefault();
         if (tab === "inventory") searchInputRef.current?.focus();
-        else if (!isStaff) {
+        else {
           setFocusSearchPending(true);
           setTab("inventory");
         }
@@ -834,7 +835,7 @@ export default function StockroomApp() {
   async function completeSale(customer, lines) {
     const number = "INV-" + String(seq).padStart(4, "0");
     const total = +lines.reduce((s, l) => s + l.qty * l.price, 0).toFixed(2);
-    const invoice = { id: uid("inv_"), number, customer, date: todayStr(), lines, total };
+    const invoice = { id: uid("inv_"), number, customer, date: todayStr(), lines, total, createdBy: currentUser?.username || "", createdByRole: currentUser?.role || "admin" };
     const nextInvoices = [invoice, ...invoices];
 
     setItems((prev) =>
@@ -1142,7 +1143,7 @@ export default function StockroomApp() {
           {tab === "dashboard" && isAdmin && (
             <DashboardView items={items} invoices={invoices} returns={returns} onGoToSell={() => setTab("sell")} onGoToInventory={() => setTab("inventory")} />
           )}
-          {tab === "inventory" && isAdmin && (
+          {tab === "inventory" && (
             <InventoryView
               items={filteredItems}
               allCount={items.length}
@@ -1154,6 +1155,7 @@ export default function StockroomApp() {
               onExport={exportInventory}
               onShare={() => setShareOpen(true)}
               searchInputRef={searchInputRef}
+              isAdmin={isAdmin}
             />
           )}
           {tab === "sell" && <SellView items={items} onComplete={completeSale} />}
@@ -1723,17 +1725,17 @@ function MobileNav({ tab, setTab, isAdmin }) {
 
 // ---------------- Inventory ----------------
 
-function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDelete, onExport, onShare, searchInputRef }) {
+function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDelete, onExport, onShare, searchInputRef, isAdmin }) {
   return (
     <div>
       <Header
         title="Inventory"
-        subtitle={`${allCount} item${allCount === 1 ? "" : "s"} tracked`}
+        subtitle={`${allCount} item${allCount === 1 ? "" : "s"} tracked${isAdmin ? "" : " · view only"}`}
         actions={
           <>
             <IconButton icon={Share2} label="Share list" onClick={onShare} variant="ghost" />
             <IconButton icon={Download} label="Export Excel" onClick={onExport} variant="ghost" />
-            <IconButton icon={Plus} label="Add item" onClick={onAdd} variant="solid" />
+            {isAdmin && <IconButton icon={Plus} label="Add item" onClick={onAdd} variant="solid" />}
           </>
         }
       />
@@ -1754,7 +1756,7 @@ function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDe
           icon={Boxes}
           title={allCount === 0 ? "No stock yet" : "No matches"}
           body={allCount === 0 ? "Add your first item to start tracking inventory." : "Try a different search term."}
-          action={allCount === 0 ? { label: "Add item", onClick: onAdd } : null}
+          action={allCount === 0 && isAdmin ? { label: "Add item", onClick: onAdd } : null}
         />
       ) : (
         <div style={{ background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 13, overflow: "hidden", boxShadow: SHADOW_SM }}>
@@ -1762,7 +1764,7 @@ function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDe
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
             <thead>
               <tr style={{ background: PAPER_DIM, textAlign: "left" }}>
-                {["SKU", "Name", "Category", "Qty", "Price", "Value", ""].map((h, i) => (
+                {(isAdmin ? ["SKU", "Name", "Category", "Qty", "Price", "Value", ""] : ["SKU", "Name", "Category", "Qty", "Price", "Value"]).map((h, i) => (
                   <th key={i} style={{ padding: "11px 16px", fontWeight: 600, fontSize: 11.5, letterSpacing: 0.4, textTransform: "uppercase", color: SLATE, borderBottom: `1px solid ${LINE}` }}>
                     {h}
                   </th>
@@ -1792,10 +1794,12 @@ function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDe
                     </td>
                     <td style={{ padding: "12px 16px", fontFamily: "'IBM Plex Mono', monospace" }}>{currency(it.price)}</td>
                     <td style={{ padding: "12px 16px", fontFamily: "'IBM Plex Mono', monospace", color: SLATE }}>{currency(it.price * it.quantity)}</td>
-                    <td style={{ padding: "12px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
-                      <RowIconBtn icon={Pencil} onClick={() => onEdit(it)} />
-                      <RowIconBtn icon={Trash2} onClick={() => onDelete(it)} danger />
-                    </td>
+                    {isAdmin && (
+                      <td style={{ padding: "12px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
+                        <RowIconBtn icon={Pencil} onClick={() => onEdit(it)} />
+                        <RowIconBtn icon={Trash2} onClick={() => onDelete(it)} danger />
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -2158,17 +2162,31 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {invoices.map((inv) => {
             const returnedAmt = returnedTotalFor(inv.id);
+            const staffMade = inv.createdByRole === "staff";
             return (
               <button
                 key={inv.id}
                 onClick={() => onView(inv)}
-                style={{ display: "flex", alignItems: "center", gap: 14, textAlign: "left", background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 11, padding: "14px 16px" }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 14, textAlign: "left",
+                  background: staffMade ? AMBER_TINT : "var(--sr-card-bg)",
+                  border: `1px solid ${staffMade ? AMBER : LINE}`,
+                  borderLeft: `4px solid ${staffMade ? AMBER_DARK : LINE}`,
+                  borderRadius: 11, padding: "14px 16px",
+                }}
               >
                 <div style={{ width: 38, height: 38, borderRadius: 8, background: PAPER_DIM, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                   <Receipt size={17} color={AMBER} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", fontSize: 13 }}>{inv.number}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", fontSize: 13 }}>{inv.number}</div>
+                    {staffMade && (
+                      <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: AMBER_DARK, background: "var(--sr-card-bg)", border: `1px solid ${AMBER}`, borderRadius: 5, padding: "1px 6px" }}>
+                        Staff{inv.createdBy ? ` · ${inv.createdBy}` : ""}
+                      </span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 12.5, color: SLATE }}>{inv.customer} · {inv.date} · {inv.lines.length} item{inv.lines.length === 1 ? "" : "s"}</div>
                   {returnedAmt > 0 && (
                     <div style={{ fontSize: 11, color: RED, marginTop: 2, display: "flex", alignItems: "center", gap: 3 }}>
@@ -2551,6 +2569,11 @@ function InvoiceModal({ invoice, onClose, onDownloadPdf, onSharePdf, onStartRetu
           <div style={{ textAlign: "right", fontSize: 12.5, color: SLATE }}>
             <div>{invoice.date}</div>
             <div style={{ marginTop: 2 }}>Billed to: <strong style={{ color: INK }}>{invoice.customer}</strong></div>
+            {invoice.createdByRole === "staff" && (
+              <div style={{ marginTop: 4, display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: AMBER_DARK, background: AMBER_TINT, border: `1px solid ${AMBER}`, borderRadius: 5, padding: "2px 7px" }}>
+                Staff sale{invoice.createdBy ? ` · ${invoice.createdBy}` : ""}
+              </div>
+            )}
           </div>
         </div>
 
