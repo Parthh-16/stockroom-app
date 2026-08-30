@@ -6,7 +6,7 @@ import {
   ShoppingCart, X, Check, AlertTriangle, ChevronRight, Boxes,
   Printer, ArrowLeft, FileText, Link2, RefreshCw, Image as ImageIcon,
   DatabaseBackup, UploadCloud, Users, RotateCcw, Minus, Share2, FileSpreadsheet, EyeOff, Eye, Sun, Moon,
-  LayoutDashboard, TrendingUp, TrendingDown, Trophy
+  LayoutDashboard, TrendingUp, TrendingDown, Trophy, MessageCircle
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -111,6 +111,18 @@ const SALES_KEY = "stockroom:invoices";
 const SEQ_KEY = "stockroom:invoice-seq";
 const RETURNS_KEY = "stockroom:returns";
 const RETURN_SEQ_KEY = "stockroom:return-seq";
+const UNIT_OPTIONS = [
+  { value: "pcs", label: "Pieces" },
+  { value: "sets", label: "Sets" },
+  { value: "boxes", label: "Boxes" },
+];
+function unitLabel(unit, qty) {
+  const opt = UNIT_OPTIONS.find((u) => u.value === unit);
+  if (!opt) return "";
+  if (qty === 1) return opt.label.replace(/s$/, "");
+  return opt.label.toLowerCase();
+}
+
 const AUTH_KEY = "stockroom:auth";
 const SESSION_KEY = "stockroom:session";
 const DEFAULT_AUTH = { username: "Admin", password: "Admin@123" };
@@ -128,6 +140,32 @@ function loadJsPDF() {
     document.head.appendChild(script);
   });
   return jsPDFPromise;
+}
+
+// ---- share a generated PDF via the native share sheet (WhatsApp etc.), ----
+// ---- falling back to a plain download + WhatsApp text chat on desktop ----
+async function shareOrDownloadPdf(blob, filename, shareText) {
+  try {
+    const file = new File([blob], filename, { type: "application/pdf" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename, text: shareText });
+      return "shared";
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") return "cancelled"; // user backed out of the share sheet
+    // fall through to the download fallback below
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  const waText = encodeURIComponent(`${shareText}\n\n(Just downloaded "${filename}" — attach it from your Downloads in this chat.)`);
+  window.open(`https://wa.me/?text=${waText}`, "_blank");
+  return "downloaded";
 }
 
 function resizeImage(file, maxDim = 240) {
@@ -537,75 +575,94 @@ export default function StockroomApp() {
   }
 
   // Option 2: PDF catalog with no prices — safe to hand straight to customers.
+  async function buildCatalogDoc() {
+    const { jsPDF } = await loadJsPDF();
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const marginX = 48;
+    const rightX = 547;
+    const rowH = 46;
+    let y = 70;
+
+    function drawHeader() {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(19);
+      doc.setTextColor(28, 36, 49);
+      doc.text("Our Stock", marginX, y);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(91, 100, 114);
+      doc.text("Catalog — prices on request", marginX, y + 16);
+      y += 40;
+      doc.setDrawColor(28, 36, 49);
+      doc.setLineWidth(1.2);
+      doc.line(marginX, y, rightX, y);
+      y += 8;
+    }
+
+    drawHeader();
+
+    for (const it of items) {
+      if (y + rowH > 790) {
+        doc.addPage();
+        y = 60;
+      }
+      const inStock = it.quantity > 0;
+      if (it.image) {
+        try { doc.addImage(it.image, "JPEG", marginX, y, 34, 34); } catch (e) {}
+      } else {
+        doc.setDrawColor(228, 220, 200);
+        doc.rect(marginX, y, 34, 34);
+      }
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11.5);
+      doc.setTextColor(28, 36, 49);
+      doc.text(it.name, marginX + 46, y + 15);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9.5);
+      doc.setTextColor(91, 100, 114);
+      doc.text(it.category || "", marginX + 46, y + 29);
+
+      const badgeText = inStock ? "In Stock" : "Out of Stock";
+      doc.setFontSize(9);
+      const badgeW = doc.getTextWidth(badgeText) + 16;
+      const badgeX = rightX - badgeW;
+      doc.setFillColor(...(inStock ? [237, 247, 240] : [251, 234, 231]));
+      doc.roundedRect(badgeX, y + 8, badgeW, 18, 4, 4, "F");
+      doc.setTextColor(...(inStock ? [63, 122, 87] : [181, 72, 61]));
+      doc.text(badgeText, badgeX + 8, y + 20);
+
+      y += rowH;
+      doc.setDrawColor(228, 220, 200);
+      doc.setLineWidth(0.5);
+      doc.line(marginX, y - 12, rightX, y - 12);
+    }
+
+    return doc;
+  }
+
   async function downloadCatalogPdf() {
     setPreparingCatalog(true);
     try {
-      const { jsPDF } = await loadJsPDF();
-      const doc = new jsPDF({ unit: "pt", format: "a4" });
-      const marginX = 48;
-      const rightX = 547;
-      const rowH = 46;
-      let y = 70;
-
-      function drawHeader() {
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(19);
-        doc.setTextColor(28, 36, 49);
-        doc.text("Our Stock", marginX, y);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(10);
-        doc.setTextColor(91, 100, 114);
-        doc.text("Catalog — prices on request", marginX, y + 16);
-        y += 40;
-        doc.setDrawColor(28, 36, 49);
-        doc.setLineWidth(1.2);
-        doc.line(marginX, y, rightX, y);
-        y += 8;
-      }
-
-      drawHeader();
-
-      for (const it of items) {
-        if (y + rowH > 790) {
-          doc.addPage();
-          y = 60;
-        }
-        const inStock = it.quantity > 0;
-        if (it.image) {
-          try { doc.addImage(it.image, "JPEG", marginX, y, 34, 34); } catch (e) {}
-        } else {
-          doc.setDrawColor(228, 220, 200);
-          doc.rect(marginX, y, 34, 34);
-        }
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(11.5);
-        doc.setTextColor(28, 36, 49);
-        doc.text(it.name, marginX + 46, y + 15);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(9.5);
-        doc.setTextColor(91, 100, 114);
-        doc.text(it.category || "", marginX + 46, y + 29);
-
-        const badgeText = inStock ? "In Stock" : "Out of Stock";
-        doc.setFontSize(9);
-        const badgeW = doc.getTextWidth(badgeText) + 16;
-        const badgeX = rightX - badgeW;
-        doc.setFillColor(...(inStock ? [237, 247, 240] : [251, 234, 231]));
-        doc.roundedRect(badgeX, y + 8, badgeW, 18, 4, 4, "F");
-        doc.setTextColor(...(inStock ? [63, 122, 87] : [181, 72, 61]));
-        doc.text(badgeText, badgeX + 8, y + 20);
-
-        y += rowH;
-        doc.setDrawColor(228, 220, 200);
-        doc.setLineWidth(0.5);
-        doc.line(marginX, y - 12, rightX, y - 12);
-      }
-
+      const doc = await buildCatalogDoc();
       doc.save(`stock_catalog_${Date.now()}.pdf`);
       showToast("Customer catalog downloaded");
       setShareOpen(false);
     } catch (e) {
       showToast("Couldn't generate the catalog — check your connection and try again.", "warn");
+    } finally {
+      setPreparingCatalog(false);
+    }
+  }
+
+  async function shareCatalogPdf() {
+    setPreparingCatalog(true);
+    try {
+      const doc = await buildCatalogDoc();
+      const blob = doc.output("blob");
+      const result = await shareOrDownloadPdf(blob, `stock_catalog_${Date.now()}.pdf`, "Here's our latest stock catalog");
+      if (result !== "cancelled") setShareOpen(false);
+    } catch (e) {
+      showToast("Couldn't share the catalog — check your connection and try again.", "warn");
     } finally {
       setPreparingCatalog(false);
     }
@@ -763,12 +820,11 @@ export default function StockroomApp() {
   }
 
   // ---- PDF invoice ----
-  async function downloadInvoicePdf(invoice) {
-    try {
-      const { jsPDF } = await loadJsPDF();
-      const doc = new jsPDF({ unit: "pt", format: "a4" });
-      const marginX = 48;
-      let y = 64;
+  async function buildInvoiceDoc(invoice) {
+    const { jsPDF } = await loadJsPDF();
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const marginX = 48;
+    let y = 64;
 
       doc.setFont("helvetica", "bold");
       doc.setFontSize(20);
@@ -815,7 +871,7 @@ export default function StockroomApp() {
         doc.text(l.sku, marginX, y + 12);
         doc.setFontSize(10.5);
         doc.setTextColor(28, 36, 49);
-        doc.text(String(l.qty), 330, y, { align: "right" });
+        doc.text(`${l.qty} ${unitLabel(l.unit || "pcs", l.qty)}`, 330, y, { align: "right" });
         doc.text(currency(l.price), 430, y, { align: "right" });
         doc.text(currency(l.qty * l.price), rightX, y, { align: "right" });
         y += 30;
@@ -840,9 +896,25 @@ export default function StockroomApp() {
       doc.setTextColor(91, 100, 114);
       doc.text("Thank you for your purchase.", 300, y, { align: "center" });
 
+      return doc;
+  }
+
+  async function downloadInvoicePdf(invoice) {
+    try {
+      const doc = await buildInvoiceDoc(invoice);
       doc.save(`${invoice.number}.pdf`);
     } catch (e) {
       showToast("Couldn't generate the PDF — check your connection and try again.", "warn");
+    }
+  }
+
+  async function shareInvoicePdf(invoice) {
+    try {
+      const doc = await buildInvoiceDoc(invoice);
+      const blob = doc.output("blob");
+      await shareOrDownloadPdf(blob, `${invoice.number}.pdf`, `Invoice ${invoice.number} — ${invoice.customer}`);
+    } catch (e) {
+      showToast("Couldn't share the invoice — check your connection and try again.", "warn");
     }
   }
 
@@ -1038,6 +1110,7 @@ export default function StockroomApp() {
           invoice={viewInvoice}
           onClose={() => setViewInvoice(null)}
           onDownloadPdf={() => downloadInvoicePdf(viewInvoice)}
+          onSharePdf={() => shareInvoicePdf(viewInvoice)}
           onStartReturn={() => setReturningInvoice(viewInvoice)}
           returnedQtyFor={returnedQtyFor}
         />
@@ -1057,6 +1130,7 @@ export default function StockroomApp() {
           preparingCatalog={preparingCatalog}
           onClose={() => setShareOpen(false)}
           onDownloadCatalog={downloadCatalogPdf}
+          onShareCatalog={shareCatalogPdf}
           onDownloadPriceList={downloadPriceListExcel}
         />
       )}
@@ -1484,7 +1558,7 @@ function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDe
                     <td style={{ padding: "12px 16px" }}>
                       <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: low ? RED : INK, display: "inline-flex", alignItems: "center", gap: 5 }}>
                         {low && <AlertTriangle size={12} />}
-                        {it.quantity}
+                        {it.quantity} <span style={{ fontWeight: 400, color: SLATE, fontSize: 11.5 }}>{unitLabel(it.unit || "pcs", it.quantity)}</span>
                       </span>
                     </td>
                     <td style={{ padding: "12px 16px", fontFamily: "'IBM Plex Mono', monospace" }}>{currency(it.price)}</td>
@@ -1520,7 +1594,7 @@ function RowIconBtn({ icon: Icon, onClick, danger }) {
 
 // ---------------- Item editor ----------------
 
-function ShareStockListModal({ itemCount, preparingCatalog, onClose, onDownloadCatalog, onDownloadPriceList }) {
+function ShareStockListModal({ itemCount, preparingCatalog, onClose, onDownloadCatalog, onShareCatalog, onDownloadPriceList }) {
   return (
     <Overlay onClose={onClose}>
       <div className="sr-modal-pad" style={{ padding: "22px 24px 24px" }}>
@@ -1540,13 +1614,24 @@ function ShareStockListModal({ itemCount, preparingCatalog, onClose, onDownloadC
             <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 12, lineHeight: 1.5 }}>
               A clean PDF with item names, categories, photos and stock status. Safe to send straight to customers as-is.
             </div>
-            <button
-              onClick={onDownloadCatalog}
-              disabled={preparingCatalog}
-              style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: "none", background: INK, color: PAPER, fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, opacity: preparingCatalog ? 0.7 : 1 }}
-            >
-              <FileText size={14} /> {preparingCatalog ? "Preparing…" : "Download PDF catalog"}
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              {onShareCatalog && (
+                <button
+                  onClick={onShareCatalog}
+                  disabled={preparingCatalog}
+                  style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: "#25D366", color: "#fff", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, opacity: preparingCatalog ? 0.7 : 1 }}
+                >
+                  <MessageCircle size={14} /> {preparingCatalog ? "Preparing…" : "WhatsApp"}
+                </button>
+              )}
+              <button
+                onClick={onDownloadCatalog}
+                disabled={preparingCatalog}
+                style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: INK, color: PAPER, fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, opacity: preparingCatalog ? 0.7 : 1 }}
+              >
+                <FileText size={14} /> {preparingCatalog ? "Preparing…" : "Download PDF"}
+              </button>
+            </div>
           </div>
 
           <div style={{ border: `1px solid ${LINE}`, borderRadius: 11, padding: 16 }}>
@@ -1574,7 +1659,7 @@ function ShareStockListModal({ itemCount, preparingCatalog, onClose, onDownloadC
 
 function ItemEditor({ item, onSave, onCancel }) {
   const isNew = !item;
-  const [form, setForm] = useState(item || { id: uid("sku_"), name: "", sku: "", category: "", quantity: 0, price: 0, costPrice: 0, lowStockAt: 5, image: null });
+  const [form, setForm] = useState(item || { id: uid("sku_"), name: "", sku: "", category: "", unit: "pcs", quantity: 0, price: 0, costPrice: 0, lowStockAt: 5, image: null });
   const [error, setError] = useState("");
   const [imageBusy, setImageBusy] = useState(false);
   const fileInputRef = useRef(null);
@@ -1601,7 +1686,7 @@ function ItemEditor({ item, onSave, onCancel }) {
     if (!form.name.trim()) return setError("Item name is required.");
     if (!form.sku.trim()) return setError("SKU is required.");
     if (form.quantity < 0 || form.price < 0 || form.costPrice < 0) return setError("Quantity, price, and cost can't be negative.");
-    onSave({ ...form, quantity: Number(form.quantity), price: Number(form.price), costPrice: Number(form.costPrice || 0), _isNew: isNew });
+    onSave({ ...form, unit: form.unit || "pcs", quantity: Number(form.quantity), price: Number(form.price), costPrice: Number(form.costPrice || 0), _isNew: isNew });
   }
 
   return (
@@ -1647,6 +1732,13 @@ function ItemEditor({ item, onSave, onCancel }) {
           <Field label="Quantity in stock">
             <input type="number" min="0" value={form.quantity} onChange={(e) => update("quantity", e.target.value)} style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} />
           </Field>
+          <Field label="Unit type">
+            <select value={form.unit || "pcs"} onChange={(e) => update("unit", e.target.value)} style={inputStyle}>
+              {UNIT_OPTIONS.map((u) => (
+                <option key={u.value} value={u.value}>{u.label}</option>
+              ))}
+            </select>
+          </Field>
           <Field label="Unit price (₹)">
             <input type="number" min="0" step="0.01" value={form.price} onChange={(e) => update("price", e.target.value)} style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} />
           </Field>
@@ -1680,7 +1772,7 @@ function SellView({ items, onComplete }) {
   const available = items.filter((i) => i.quantity > 0);
   const cartLines = cart.map((c) => {
     const it = items.find((i) => i.id === c.stockId);
-    return it ? { stockId: it.id, sku: it.sku, name: it.name, price: it.price, qty: c.qty, image: it.image || null } : null;
+    return it ? { stockId: it.id, sku: it.sku, name: it.name, price: it.price, qty: c.qty, unit: it.unit || "pcs", image: it.image || null } : null;
   }).filter(Boolean);
   const total = cartLines.reduce((s, l) => s + l.qty * l.price, 0);
 
@@ -1729,7 +1821,7 @@ function SellView({ items, onComplete }) {
             <select value={pickId} onChange={(e) => setPickId(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
               <option value="">Choose item…</option>
               {available.map((it) => (
-                <option key={it.id} value={it.id}>{it.name} — {it.quantity} in stock — {currency(it.price)}</option>
+                <option key={it.id} value={it.id}>{it.name} — {it.quantity} {unitLabel(it.unit || "pcs", it.quantity)} in stock — {currency(it.price)}</option>
               ))}
             </select>
             <input type="number" min="1" value={pickQty} onChange={(e) => setPickQty(e.target.value)} style={{ ...inputStyle, width: 76 }} />
@@ -1752,7 +1844,7 @@ function SellView({ items, onComplete }) {
                     <div style={{ fontWeight: 600 }}>{l.name}</div>
                     <div style={{ fontSize: 11.5, color: SLATE, fontFamily: "'IBM Plex Mono', monospace" }}>{l.sku}</div>
                   </div>
-                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", color: SLATE }}>{l.qty} × {currency(l.price)}</div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", color: SLATE }}>{l.qty} {unitLabel(l.unit, l.qty)} × {currency(l.price)}</div>
                   <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, width: 84, textAlign: "right" }}>{currency(l.qty * l.price)}</div>
                   <RowIconBtn icon={X} onClick={() => removeLine(l.stockId)} danger />
                 </div>
@@ -2184,12 +2276,18 @@ function StatCard({ label, value, accent }) {
   );
 }
 
-function InvoiceModal({ invoice, onClose, onDownloadPdf, onStartReturn, returnedQtyFor }) {
+function InvoiceModal({ invoice, onClose, onDownloadPdf, onSharePdf, onStartReturn, returnedQtyFor }) {
   const [downloading, setDownloading] = useState(false);
+  const [sharing, setSharing] = useState(false);
   async function handleDownload() {
     setDownloading(true);
     await onDownloadPdf();
     setDownloading(false);
+  }
+  async function handleShare() {
+    setSharing(true);
+    await onSharePdf();
+    setSharing(false);
   }
   const totalReturnable = invoice.lines.reduce((s, l) => s + (l.qty - (returnedQtyFor ? returnedQtyFor(invoice.id, l.stockId) : 0)), 0);
   return (
@@ -2203,6 +2301,11 @@ function InvoiceModal({ invoice, onClose, onDownloadPdf, onStartReturn, returned
             <button onClick={() => window.print()} style={{ background: "none", border: `1px solid ${LINE}`, borderRadius: 8, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: INK }}>
               <Printer size={14} /> Print
             </button>
+            {onSharePdf && (
+              <button onClick={handleShare} disabled={sharing} style={{ background: "#25D366", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, opacity: sharing ? 0.7 : 1 }}>
+                <MessageCircle size={14} /> {sharing ? "Preparing…" : "WhatsApp"}
+              </button>
+            )}
             <button onClick={handleDownload} disabled={downloading} style={{ background: INK, color: PAPER, border: "none", borderRadius: 8, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, opacity: downloading ? 0.7 : 1 }}>
               <FileText size={14} /> {downloading ? "Preparing…" : "Download PDF"}
             </button>
@@ -2250,7 +2353,7 @@ function InvoiceModal({ invoice, onClose, onDownloadPdf, onStartReturn, returned
                       </div>
                     </div>
                   </td>
-                  <td style={{ padding: "10px 0", textAlign: "center", fontFamily: "'IBM Plex Mono', monospace" }}>{l.qty}</td>
+                  <td style={{ padding: "10px 0", textAlign: "center", fontFamily: "'IBM Plex Mono', monospace" }}>{l.qty} <span style={{ color: SLATE, fontSize: 10.5 }}>{unitLabel(l.unit || "pcs", l.qty)}</span></td>
                   <td style={{ padding: "10px 0", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{currency(l.price)}</td>
                   <td style={{ padding: "10px 0", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{currency(l.qty * l.price)}</td>
                 </tr>
@@ -2307,7 +2410,7 @@ function ReturnModal({ invoice, returnedQtyFor, onCancel, onSubmit }) {
   }
 
   const returnLines = rows.filter((r) => Number(r.returnQty) > 0).map((r) => ({
-    stockId: r.stockId, sku: r.sku, name: r.name, price: r.price, qty: Number(r.returnQty), image: r.image,
+    stockId: r.stockId, sku: r.sku, name: r.name, price: r.price, qty: Number(r.returnQty), unit: r.unit || "pcs", image: r.image,
   }));
   const total = returnLines.reduce((s, l) => s + l.qty * l.price, 0);
 
@@ -2337,7 +2440,7 @@ function ReturnModal({ invoice, returnedQtyFor, onCancel, onSubmit }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.name}</div>
                 <div style={{ fontSize: 11, color: SLATE }}>
-                  Sold {r.qty} · {r.already > 0 ? `${r.already} already returned · ` : ""}{r.remaining} eligible
+                  Sold {r.qty} {unitLabel(r.unit || "pcs", r.qty)} · {r.already > 0 ? `${r.already} already returned · ` : ""}{r.remaining} eligible
                 </div>
               </div>
               <input
@@ -2448,7 +2551,7 @@ function ReturnDetailModal({ record, onClose }) {
                   <div style={{ fontWeight: 600 }}>{l.name}</div>
                   <div style={{ fontSize: 11, color: SLATE, fontFamily: "'IBM Plex Mono', monospace" }}>{l.sku}</div>
                 </td>
-                <td style={{ padding: "10px 0", textAlign: "center", fontFamily: "'IBM Plex Mono', monospace" }}>{l.qty}</td>
+                <td style={{ padding: "10px 0", textAlign: "center", fontFamily: "'IBM Plex Mono', monospace" }}>{l.qty} <span style={{ color: SLATE, fontSize: 10.5 }}>{unitLabel(l.unit || "pcs", l.qty)}</span></td>
                 <td style={{ padding: "10px 0", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{currency(l.price)}</td>
                 <td style={{ padding: "10px 0", textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{currency(l.qty * l.price)}</td>
               </tr>
