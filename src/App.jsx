@@ -877,6 +877,8 @@ export default function StockroomApp() {
       lines: returnLines,
       total,
       reason: reason || "",
+      createdBy: currentUser?.username || "",
+      createdByRole: currentUser?.role || "admin",
     };
     const nextReturns = [record, ...returns];
     const missingItems = returnLines.filter((l) => !items.some((it) => it.id === l.stockId));
@@ -1181,6 +1183,9 @@ export default function StockroomApp() {
           )}
           {tab === "returns" && isAdmin && (
             <ReturnsView returns={returns} onView={(r) => setViewReturn(r)} />
+          )}
+          {tab === "ledger" && isAdmin && (
+            <LedgerView invoices={invoices} returns={returns} onViewInvoice={(inv) => setViewInvoice(inv)} onViewReturn={(r) => setViewReturn(r)} />
           )}
         </main>
       </div>
@@ -1588,6 +1593,7 @@ function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, usernam
     { key: "sell", label: "New sale", icon: ShoppingCart },
     { key: "invoices", label: "Invoices", icon: Receipt, count: counts.invoices },
     { key: "returns", label: "Returns", icon: RotateCcw, count: counts.returns },
+    { key: "ledger", label: "Ledger", icon: FileText },
     { key: "customers", label: "Customers", icon: Users, count: counts.customers },
   ];
   const items = isAdmin ? allItems : allItems.filter((i) => STAFF_ALLOWED_TABS.includes(i.key));
@@ -1696,6 +1702,7 @@ function MobileNav({ tab, setTab, isAdmin }) {
     { key: "sell", label: "Sell", icon: ShoppingCart },
     { key: "invoices", label: "Invoices", icon: Receipt },
     { key: "returns", label: "Returns", icon: RotateCcw },
+    { key: "ledger", label: "Ledger", icon: FileText },
     { key: "customers", label: "Customers", icon: Users },
   ];
   const items = isAdmin ? allItems : allItems.filter((i) => STAFF_ALLOWED_TABS.includes(i.key));
@@ -2797,6 +2804,192 @@ function ReturnsView({ returns, onView }) {
               <ChevronRight size={16} color={SLATE} />
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LedgerView({ invoices, returns, onViewInvoice, onViewReturn }) {
+  const [typeFilter, setTypeFilter] = useState("all"); // "all" | "sale" | "return"
+  const [creatorFilter, setCreatorFilter] = useState("all"); // "all" | "staff" | "admin"
+  const [search, setSearch] = useState("");
+
+  const entries = useMemo(() => {
+    const saleEntries = invoices.map((inv) => ({
+      id: "inv:" + inv.id,
+      kind: "sale",
+      number: inv.number,
+      date: inv.date,
+      party: inv.customer,
+      amount: inv.total,
+      createdBy: inv.createdBy,
+      createdByRole: inv.createdByRole,
+      raw: inv,
+    }));
+    const returnEntries = returns.map((r) => ({
+      id: "ret:" + r.id,
+      kind: "return",
+      number: r.number,
+      date: r.date,
+      party: r.customer,
+      amount: -r.total,
+      createdBy: r.createdBy,
+      createdByRole: r.createdByRole,
+      refNumber: r.invoiceNumber,
+      raw: r,
+    }));
+    // Both source arrays are already newest-first (new entries are
+    // prepended as they're created), so concatenating then sorting by
+    // parsed date keeps same-day entries in that recency order too —
+    // there's no stored time-of-day to sort more precisely than that.
+    return [...saleEntries, ...returnEntries].sort((a, b) => {
+      const ta = parseAppDate(a.date)?.getTime() ?? 0;
+      const tb = parseAppDate(b.date)?.getTime() ?? 0;
+      return tb - ta;
+    });
+  }, [invoices, returns]);
+
+  const filtered = entries.filter((e) => {
+    if (typeFilter !== "all" && e.kind !== typeFilter) return false;
+    if (creatorFilter !== "all") {
+      const isStaffEntry = e.createdByRole === "staff";
+      if (creatorFilter === "staff" && !isStaffEntry) return false;
+      if (creatorFilter === "admin" && isStaffEntry) return false;
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      const hay = `${e.number} ${e.party} ${e.createdBy || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const totalSales = +entries.filter((e) => e.kind === "sale").reduce((s, e) => s + e.amount, 0).toFixed(2);
+  const totalReturns = +entries.filter((e) => e.kind === "return").reduce((s, e) => s - e.amount, 0).toFixed(2);
+  const net = +(totalSales - totalReturns).toFixed(2);
+
+  return (
+    <div>
+      <Header title="Ledger" subtitle={`${filtered.length} of ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`} />
+
+      <div className="sr-stat-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 20 }}>
+        <StatCard label="Total sales" value={currency(totalSales)} accent={GREEN} />
+        <StatCard label="Total returns" value={currency(totalReturns)} accent={totalReturns > 0 ? RED : undefined} />
+        <StatCard label="Net" value={currency(net)} />
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[
+            { key: "all", label: "All" },
+            { key: "sale", label: "Sales" },
+            { key: "return", label: "Returns" },
+          ].map((opt) => {
+            const active = typeFilter === opt.key;
+            return (
+              <button
+                key={opt.key}
+                onClick={() => setTypeFilter(opt.key)}
+                style={{
+                  padding: "6px 13px", borderRadius: 999, border: `1px solid ${active ? INK : LINE}`,
+                  background: active ? INK : "var(--sr-card-bg)", color: active ? PAPER : SLATE,
+                  fontSize: 12.5, fontWeight: 600,
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[
+            { key: "all", label: "All accounts" },
+            { key: "staff", label: "Staff" },
+            { key: "admin", label: "Admin" },
+          ].map((opt) => {
+            const active = creatorFilter === opt.key;
+            return (
+              <button
+                key={opt.key}
+                onClick={() => setCreatorFilter(opt.key)}
+                style={{
+                  padding: "6px 13px", borderRadius: 999, border: `1px solid ${active ? AMBER_DARK : LINE}`,
+                  background: active ? AMBER_TINT : "var(--sr-card-bg)", color: active ? AMBER_DARK : SLATE,
+                  fontSize: 12.5, fontWeight: 600,
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="sr-search" style={{ position: "relative", maxWidth: 260, flex: 1, minWidth: 160 }}>
+          <Search size={14} color={SLATE} style={{ position: "absolute", left: 11, top: 10 }} />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search customer, ID…"
+            style={{ width: "100%", padding: "8px 11px 8px 32px", borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", fontSize: 13, color: INK }}
+          />
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState
+          icon={FileText}
+          title={entries.length === 0 ? "No transactions yet" : "No matches"}
+          body={entries.length === 0 ? "Sales and returns will show up here as one running log." : "Try a different filter or search term."}
+        />
+      ) : (
+        <div style={{ background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 13, overflow: "hidden", boxShadow: SHADOW_SM }}>
+          <div className="sr-table-wrap">
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ background: PAPER_DIM, textAlign: "left" }}>
+                {["Date", "Entry", "Party", "By", "Amount"].map((h, i) => (
+                  <th key={i} style={{ padding: "11px 16px", fontWeight: 600, fontSize: 11.5, letterSpacing: 0.4, textTransform: "uppercase", color: SLATE, borderBottom: `1px solid ${LINE}` }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((e) => {
+                const staffEntry = e.createdByRole === "staff";
+                return (
+                  <tr
+                    key={e.id}
+                    className="sr-row"
+                    style={{ borderBottom: `1px solid ${LINE}`, cursor: "pointer", background: staffEntry ? AMBER_TINT : "transparent" }}
+                    onClick={() => (e.kind === "sale" ? onViewInvoice(e.raw) : onViewReturn(e.raw))}
+                  >
+                    <td style={{ padding: "12px 16px", color: SLATE, whiteSpace: "nowrap" }}>{e.date}</td>
+                    <td style={{ padding: "12px 16px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {e.kind === "sale" ? <Receipt size={14} color={AMBER} /> : <RotateCcw size={14} color={RED} />}
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 12.5 }}>{e.number}</span>
+                        {e.kind === "return" && <span style={{ fontSize: 11, color: SLATE }}>vs {e.refNumber}</span>}
+                      </div>
+                    </td>
+                    <td style={{ padding: "12px 16px", color: INK }}>{e.party}</td>
+                    <td style={{ padding: "12px 16px", color: SLATE, fontSize: 12.5 }}>
+                      {e.createdBy || "—"}
+                      {staffEntry && (
+                        <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: AMBER_DARK, border: `1px solid ${AMBER}`, borderRadius: 5, padding: "1px 5px" }}>
+                          Staff
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: "12px 16px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: e.amount < 0 ? RED : GREEN }}>
+                      {e.amount < 0 ? "-" : "+"}{currency(Math.abs(e.amount))}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
         </div>
       )}
     </div>
