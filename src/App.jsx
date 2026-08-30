@@ -194,6 +194,7 @@ export default function StockroomApp() {
   const [seq, setSeq] = useState(1);
   const [returnSeq, setReturnSeq] = useState(1);
   const [loaded, setLoaded] = useState(false);
+  const [bootDone, setBootDone] = useState(false);
   const [tab, setTab] = useState("inventory");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
@@ -213,8 +214,11 @@ export default function StockroomApp() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [theme, setTheme] = useState("light");
   const [accountOpen, setAccountOpen] = useState(false);
+  const [focusSearchPending, setFocusSearchPending] = useState(false);
   const toastTimer = useRef(null);
   const restoreInputRef = useRef(null);
+  const pendingDeleteRef = useRef(null);
+  const searchInputRef = useRef(null);
   const fsaSupported = typeof window !== "undefined" && !!window.showSaveFilePicker;
 
   useEffect(() => {
@@ -232,6 +236,39 @@ export default function StockroomApp() {
       return next;
     });
   }
+
+  // ---- keyboard shortcuts: "/" focuses inventory search, "N" jumps to New sale ----
+  useEffect(() => {
+    if (focusSearchPending && tab === "inventory") {
+      searchInputRef.current?.focus();
+      setFocusSearchPending(false);
+    }
+  }, [tab, focusSearchPending]);
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      const target = e.target;
+      const isTyping =
+        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || target?.isContentEditable;
+      const modalOpen =
+        editing || confirmDelete || viewInvoice || viewReturn || returningInvoice || pendingRestore || shareOpen || accountOpen;
+      if (!loggedIn || isTyping || modalOpen || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === "/") {
+        e.preventDefault();
+        if (tab === "inventory") searchInputRef.current?.focus();
+        else {
+          setFocusSearchPending(true);
+          setTab("inventory");
+        }
+      } else if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        setTab("sell");
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [tab, loggedIn, editing, confirmDelete, viewInvoice, viewReturn, returningInvoice, pendingRestore, shareOpen, accountOpen]);
 
   useEffect(() => {
     (async () => {
@@ -280,6 +317,8 @@ export default function StockroomApp() {
           }
         }
       } catch (e) {}
+
+      setBootDone(true);
     })();
   }, []);
 
@@ -289,10 +328,13 @@ export default function StockroomApp() {
   useEffect(() => { if (loaded) window.storage.set(RETURNS_KEY, JSON.stringify(returns)).catch(() => {}); }, [returns, loaded]);
   useEffect(() => { if (loaded) window.storage.set(RETURN_SEQ_KEY, JSON.stringify(returnSeq)).catch(() => {}); }, [returnSeq, loaded]);
 
-  function showToast(msg, kind = "ok") {
-    setToast({ msg, kind });
+  function showToast(msg, kind = "ok", action = null) {
+    setToast({ msg, kind, action });
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3200);
+    toastTimer.current = setTimeout(() => {
+      setToast(null);
+      if (pendingDeleteRef.current) pendingDeleteRef.current = null;
+    }, action ? 5000 : 3200);
   }
 
   // ---- login / account ----
@@ -353,9 +395,31 @@ export default function StockroomApp() {
   }
 
   function deleteItem(id) {
+    const index = items.findIndex((p) => p.id === id);
+    if (index === -1) return;
+    const removed = items[index];
+    pendingDeleteRef.current = { item: removed, index };
     setItems((prev) => prev.filter((p) => p.id !== id));
     setConfirmDelete(null);
-    showToast("Item removed", "warn");
+    showToast(`Removed "${removed.name}"`, "warn", {
+      label: "Undo",
+      onClick: undoDeleteItem,
+    });
+  }
+
+  function undoDeleteItem() {
+    const pending = pendingDeleteRef.current;
+    if (!pending) return;
+    pendingDeleteRef.current = null;
+    setItems((prev) => {
+      const next = prev.slice();
+      const at = Math.min(pending.index, next.length);
+      next.splice(at, 0, pending.item);
+      return next;
+    });
+    clearTimeout(toastTimer.current);
+    setToast(null);
+    showToast(`"${pending.item.name}" restored`);
   }
 
   const filteredItems = useMemo(() => {
@@ -767,6 +831,21 @@ export default function StockroomApp() {
     }
   }
 
+  if (!bootDone) {
+    return (
+      <div data-sr-theme={theme} style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: PAPER, minHeight: "100dvh", color: INK }}>
+        <style>{`
+          ${THEME_VARS}
+          ${FONT_IMPORT}
+          * { box-sizing: border-box; }
+          @keyframes sr-skel-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+          @media (prefers-reduced-motion: reduce) { .sr-skel { animation: none !important; opacity: 0.75 !important; } }
+        `}</style>
+        <BootSkeleton />
+      </div>
+    );
+  }
+
   if (!loggedIn) {
     return (
       <div data-sr-theme={theme} style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: PAPER, minHeight: "100dvh", color: INK }}>
@@ -797,8 +876,12 @@ export default function StockroomApp() {
         ${THEME_VARS}
         ${FONT_IMPORT}
         * { box-sizing: border-box; }
+        .stockroom-scroll { scrollbar-width: thin; scrollbar-color: ${LINE} transparent; }
         .stockroom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .stockroom-scroll::-webkit-scrollbar-track { background: transparent; }
         .stockroom-scroll::-webkit-scrollbar-thumb { background: ${LINE}; border-radius: 8px; }
+        .stockroom-scroll::-webkit-scrollbar-thumb:hover { background: ${SLATE}; }
+        .stockroom-scroll:hover { scrollbar-color: ${SLATE} transparent; }
         button { font-family: inherit; cursor: pointer; }
         input, select { font-family: inherit; }
         button, input, select, .sr-row, .navbtn { transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 120ms ease, box-shadow 140ms ease; }
@@ -891,6 +974,7 @@ export default function StockroomApp() {
               onDelete={(it) => setConfirmDelete(it)}
               onExport={exportInventory}
               onShare={() => setShareOpen(true)}
+              searchInputRef={searchInputRef}
             />
           )}
           {tab === "sell" && <SellView items={items} onComplete={completeSale} />}
@@ -974,7 +1058,7 @@ export default function StockroomApp() {
           onSubmit={changeCredentials}
         />
       )}
-      {toast && <Toast msg={toast.msg} kind={toast.kind} />}
+      {toast && <Toast msg={toast.msg} kind={toast.kind} action={toast.action} />}
     </div>
   );
 }
@@ -1315,7 +1399,7 @@ function MobileNav({ tab, setTab }) {
 
 // ---------------- Inventory ----------------
 
-function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDelete, onExport, onShare }) {
+function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDelete, onExport, onShare, searchInputRef }) {
   return (
     <div>
       <Header
@@ -1333,9 +1417,10 @@ function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDe
       <div className="sr-search" style={{ position: "relative", maxWidth: 340, marginBottom: 18 }}>
         <Search size={15} color={SLATE} style={{ position: "absolute", left: 12, top: 12 }} />
         <input
+          ref={searchInputRef}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name, SKU, category…"
+          placeholder="Search by name, SKU, category… (press / to focus)"
           style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", fontSize: 13.5, color: INK }}
         />
       </div>
@@ -1468,7 +1553,7 @@ function ShareStockListModal({ itemCount, preparingCatalog, onClose, onDownloadC
 
 function ItemEditor({ item, onSave, onCancel }) {
   const isNew = !item;
-  const [form, setForm] = useState(item || { id: uid("sku_"), name: "", sku: "", category: "", quantity: 0, price: 0, lowStockAt: 5, image: null });
+  const [form, setForm] = useState(item || { id: uid("sku_"), name: "", sku: "", category: "", quantity: 0, price: 0, costPrice: 0, lowStockAt: 5, image: null });
   const [error, setError] = useState("");
   const [imageBusy, setImageBusy] = useState(false);
   const fileInputRef = useRef(null);
@@ -1494,8 +1579,8 @@ function ItemEditor({ item, onSave, onCancel }) {
   function submit() {
     if (!form.name.trim()) return setError("Item name is required.");
     if (!form.sku.trim()) return setError("SKU is required.");
-    if (form.quantity < 0 || form.price < 0) return setError("Quantity and price can't be negative.");
-    onSave({ ...form, quantity: Number(form.quantity), price: Number(form.price), _isNew: isNew });
+    if (form.quantity < 0 || form.price < 0 || form.costPrice < 0) return setError("Quantity, price, and cost can't be negative.");
+    onSave({ ...form, quantity: Number(form.quantity), price: Number(form.price), costPrice: Number(form.costPrice || 0), _isNew: isNew });
   }
 
   return (
@@ -1543,6 +1628,9 @@ function ItemEditor({ item, onSave, onCancel }) {
           </Field>
           <Field label="Unit price (₹)">
             <input type="number" min="0" step="0.01" value={form.price} onChange={(e) => update("price", e.target.value)} style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} />
+          </Field>
+          <Field label="Cost price (₹)">
+            <input type="number" min="0" step="0.01" value={form.costPrice} onChange={(e) => update("costPrice", e.target.value)} style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} placeholder="What you paid per unit" />
           </Field>
           <Field label="Low-stock alert below">
             <input type="number" min="0" value={form.lowStockAt} onChange={(e) => update("lowStockAt", Number(e.target.value))} style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} />
@@ -2308,6 +2396,44 @@ function ModalHeader({ title, onClose }) {
   );
 }
 
+function BootSkeleton() {
+  const bar = (w, h = 14, extra = {}) => (
+    <div
+      className="sr-skel"
+      style={{
+        width: w, height: h, borderRadius: 6,
+        background: "var(--sr-paper-dim)",
+        animation: "sr-skel-pulse 1.3s ease-in-out infinite",
+        ...extra,
+      }}
+    />
+  );
+  return (
+    <div style={{ minHeight: "100dvh", display: "flex" }}>
+      <div style={{ width: 220, background: SIDEBAR_BG, padding: "22px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+        {bar(120, 20, { background: "rgba(255,255,255,0.14)", marginBottom: 18 })}
+        {[0, 1, 2, 3, 4].map((i) => bar("100%", 34, { background: "rgba(255,255,255,0.08)" }))}
+      </div>
+      <div style={{ flex: 1, padding: "28px 32px" }}>
+        {bar(180, 22, { marginBottom: 10 })}
+        {bar(260, 13, { marginBottom: 26 })}
+        {bar(320, 38, { marginBottom: 20, borderRadius: 9 })}
+        <div style={{ border: `1px solid ${LINE}`, borderRadius: 13, overflow: "hidden" }}>
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <div key={i} style={{ display: "flex", gap: 16, padding: "14px 16px", borderBottom: i < 5 ? `1px solid ${LINE}` : "none" }}>
+              {bar(70)}
+              {bar(160)}
+              {bar(90)}
+              {bar(50)}
+              {bar(60)}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConfirmDialog({ title, message, confirmLabel, danger, onCancel, onConfirm }) {
   return (
     <Overlay onClose={onCancel}>
@@ -2325,12 +2451,20 @@ function ConfirmDialog({ title, message, confirmLabel, danger, onCancel, onConfi
   );
 }
 
-function Toast({ msg, kind }) {
+function Toast({ msg, kind, action }) {
   const bg = kind === "warn" ? RED : GREEN;
   return (
     <div style={{ position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", background: bg, color: "#fff", padding: "11px 20px", borderRadius: 10, fontSize: 13, fontWeight: 600, zIndex: 60, boxShadow: "0 12px 28px rgba(0,0,0,0.22)", animation: "sr-toast-in 220ms cubic-bezier(0.16,1,0.3,1)", display: "flex", alignItems: "center", gap: 8 }}>
       {kind === "warn" ? <AlertTriangle size={14} /> : <Check size={14} />}
       {msg}
+      {action && (
+        <button
+          onClick={action.onClick}
+          style={{ marginLeft: 4, background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", fontWeight: 700, fontSize: 12.5, padding: "4px 10px", borderRadius: 6 }}
+        >
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }
