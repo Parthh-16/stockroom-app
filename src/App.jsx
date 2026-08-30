@@ -6,7 +6,7 @@ import {
   ShoppingCart, X, Check, AlertTriangle, ChevronRight, Boxes,
   Printer, ArrowLeft, FileText, Link2, RefreshCw, Image as ImageIcon,
   DatabaseBackup, UploadCloud, Users, RotateCcw, Minus, Share2, FileSpreadsheet, EyeOff, Eye, Sun, Moon,
-  LayoutDashboard, TrendingUp, TrendingDown, Trophy, MessageCircle, Wallet
+  LayoutDashboard, TrendingUp, TrendingDown, Trophy, MessageCircle, Wallet, Menu, LogOut
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -304,6 +304,7 @@ export default function StockroomApp() {
   const [theme, setTheme] = useState("light");
   const [accountOpen, setAccountOpen] = useState(false);
   const [manageUsersOpen, setManageUsersOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [focusSearchPending, setFocusSearchPending] = useState(false);
   const toastTimer = useRef(null);
   const restoreInputRef = useRef(null);
@@ -356,7 +357,7 @@ export default function StockroomApp() {
       const isTyping =
         target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || target?.isContentEditable;
       const modalOpen =
-        editing || confirmDelete || viewInvoice || viewReturn || returningInvoice || pendingRestore || shareOpen || accountOpen || manageUsersOpen;
+        editing || confirmDelete || viewInvoice || viewReturn || returningInvoice || pendingRestore || shareOpen || accountOpen || manageUsersOpen || mobileMenuOpen;
       if (!loggedIn || isTyping || modalOpen || e.metaKey || e.ctrlKey || e.altKey) return;
 
       if (e.key === "/") {
@@ -373,7 +374,7 @@ export default function StockroomApp() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [tab, loggedIn, isStaff, editing, confirmDelete, viewInvoice, viewReturn, returningInvoice, pendingRestore, shareOpen, accountOpen, manageUsersOpen]);
+  }, [tab, loggedIn, isStaff, editing, confirmDelete, viewInvoice, viewReturn, returningInvoice, pendingRestore, shareOpen, accountOpen, manageUsersOpen, mobileMenuOpen]);
 
   useEffect(() => {
     (async () => {
@@ -1168,6 +1169,7 @@ export default function StockroomApp() {
         }
         @media (max-width: 760px) {
           .sr-sidebar { display: none !important; }
+          .sr-mobile-topbar { display: flex !important; }
           .sr-mobile-nav {
             display: flex !important;
             flex-wrap: nowrap !important;
@@ -1187,21 +1189,30 @@ export default function StockroomApp() {
           .sr-summary-card { position: static !important; }
           .sr-search { max-width: none !important; }
           .sr-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-          .sr-table-wrap table { min-width: 620px; }
+          .sr-table-wrap table { min-width: 720px; }
           .sr-modal-pad { padding: 18px 16px !important; }
           .sr-header { flex-direction: column !important; align-items: stretch !important; }
           .sr-header-actions { width: 100%; }
           .sr-header-actions button { flex: 1; justify-content: center; }
-          .sr-mobile-backup { display: flex !important; }
-          .sr-mobile-backup button { flex: 1; justify-content: center; }
           .sr-stat-grid { grid-template-columns: repeat(2, 1fr) !important; }
           .sr-dash-grid { grid-template-columns: 1fr !important; }
+          .sr-cust-search-row { flex-wrap: wrap !important; }
+          .sr-cust-search-row > div { flex-basis: 100% !important; }
+          .sr-cust-search-row button { flex-basis: 100% !important; justify-content: center; }
+          .sr-cust-hist-row { flex-wrap: wrap !important; row-gap: 8px !important; }
+          .sr-cust-hist-row .sr-search { width: 100% !important; }
+          .sr-pay-toggle button { font-size: 11px !important; padding: 7px 2px !important; }
+          .sr-pay-form-row { flex-wrap: wrap !important; }
+          .sr-pay-form-row input, .sr-pay-form-row select { flex-basis: 100% !important; width: 100% !important; }
         }
         @media (max-width: 480px) {
           .sr-form-grid { grid-template-columns: 1fr !important; }
           .sr-invoice-actions { width: 100%; justify-content: stretch !important; }
           .sr-invoice-actions button { flex: 1; justify-content: center; }
           .sr-stat-grid { grid-template-columns: 1fr !important; }
+          .sr-pay-toggle { flex-wrap: wrap !important; }
+          .sr-pay-toggle button { flex: 1 1 48% !important; }
+          .sr-pay-mode button { flex: 1 1 48% !important; }
         }
       `}</style>
 
@@ -1223,6 +1234,26 @@ export default function StockroomApp() {
       <input ref={restoreInputRef} type="file" accept="application/json" onChange={handleRestoreFile} style={{ display: "none" }} />
 
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <div className="sr-mobile-topbar" style={{ display: "none", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: `1px solid ${LINE}`, background: "var(--sr-card-bg)" }}>
+          <div style={{ width: 30, height: 30, background: `linear-gradient(155deg, ${AMBER} 0%, ${AMBER_DARK} 100%)`, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Package size={16} color={INK} strokeWidth={2.4} />
+          </div>
+          <div style={{ flex: 1, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 15, color: INK }}>Stockroom</div>
+          <button
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${LINE}`, background: "none", color: INK, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+          >
+            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
+          <button
+            onClick={() => setMobileMenuOpen(true)}
+            title="Menu"
+            style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${LINE}`, background: "none", color: INK, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+          >
+            <Menu size={16} />
+          </button>
+        </div>
         <MobileNav tab={tab} setTab={setTab} isAdmin={isAdmin} />
         <main style={{ flex: 1, padding: "28px 32px 60px", overflowY: "auto" }} className="stockroom-scroll sr-main">
           {tab === "dashboard" && isAdmin && (
@@ -1338,6 +1369,21 @@ export default function StockroomApp() {
           onClose={() => setManageUsersOpen(false)}
           onAddUser={addUser}
           onRemoveUser={removeUser}
+        />
+      )}
+      {mobileMenuOpen && (
+        <MobileMenuModal
+          username={currentUser?.username || ""}
+          isAdmin={isAdmin}
+          linkedName={linkedName}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onClose={() => setMobileMenuOpen(false)}
+          onAccount={() => { setMobileMenuOpen(false); setAccountOpen(true); }}
+          onManageUsers={() => { setMobileMenuOpen(false); setManageUsersOpen(true); }}
+          onBackup={() => { setMobileMenuOpen(false); downloadBackup(); }}
+          onRestore={() => { setMobileMenuOpen(false); pickRestoreFile(); }}
+          onLogout={() => { setMobileMenuOpen(false); logout(); }}
         />
       )}
       {toast && <Toast msg={toast.msg} kind={toast.kind} action={toast.action} />}
@@ -1814,6 +1860,56 @@ function MobileNav({ tab, setTab, isAdmin }) {
   );
 }
 
+function MobileMenuModal({ username, isAdmin, linkedName, theme, onToggleTheme, onClose, onAccount, onManageUsers, onBackup, onRestore, onLogout }) {
+  return (
+    <Overlay onClose={onClose}>
+      <div className="sr-modal-pad" style={{ padding: "20px 22px 22px" }}>
+        <ModalHeader title="Menu" onClose={onClose} />
+        <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, color: SLATE, marginTop: 14, marginBottom: 8 }}>{username}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <MobileMenuItem icon={theme === "dark" ? Sun : Moon} label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={onToggleTheme} />
+          <MobileMenuItem icon={Users} label="Change login details" onClick={onAccount} />
+          {isAdmin && <MobileMenuItem icon={Users} label="Manage accounts" onClick={onManageUsers} />}
+        </div>
+
+        {isAdmin && (
+          <>
+            <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, color: SLATE, marginTop: 18, marginBottom: 8 }}>Data safety net</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: linkedName ? GREEN : SLATE, marginBottom: 8 }}>
+              <Link2 size={12} />
+              {linkedName ? `Auto-saving to ${linkedName}` : "No file linked yet — link one from the Invoices tab"}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <MobileMenuItem icon={DatabaseBackup} label="Download backup" onClick={onBackup} />
+              <MobileMenuItem icon={UploadCloud} label="Restore from backup" onClick={onRestore} />
+            </div>
+          </>
+        )}
+
+        <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 18, paddingTop: 12 }}>
+          <MobileMenuItem icon={LogOut} label="Log out" onClick={onLogout} danger />
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
+function MobileMenuItem({ icon: Icon, label, onClick, danger }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
+        padding: "11px 12px", borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)",
+        color: danger ? RED : INK, fontSize: 13.5, fontWeight: 600,
+      }}
+    >
+      <Icon size={16} color={danger ? RED : SLATE} />
+      {label}
+    </button>
+  );
+}
+
 // ---------------- Inventory ----------------
 
 function InventoryView({ items, allCount, search, setSearch, onAdd, onEdit, onDelete, onExport, onShare, searchInputRef, isAdmin }) {
@@ -2131,7 +2227,7 @@ function SellView({ items, onComplete }) {
     if (cartLines.length === 0) return setError("Add at least one item to the sale.");
     if (paymentType === "partial") {
       const amt = Number(amountPaidNow);
-      if (!amountPaidNow || amt <= 0) return setError("Enter the amount paid now, or choose Full payment / Pay later.");
+      if (!amountPaidNow || amt <= 0) return setError("Enter the amount paid now, or choose Full / Later instead.");
       if (amt > total) return setError("Amount paid can't be more than the sale total.");
     }
     setBusy(true);
@@ -2199,11 +2295,11 @@ function SellView({ items, onComplete }) {
 
           <div style={{ borderTop: "1px solid rgba(255,255,255,0.12)", paddingTop: 16, marginBottom: 18 }}>
             <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.5, color: "#9AA3B2", marginBottom: 8 }}>Payment</div>
-            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            <div className="sr-pay-toggle" style={{ display: "flex", gap: 6, marginBottom: 10 }}>
               {[
-                { key: "full", label: "Paid in full" },
-                { key: "partial", label: "Partial payment" },
-                { key: "none", label: "Pay later" },
+                { key: "full", label: "Full" },
+                { key: "partial", label: "Partial" },
+                { key: "none", label: "Later" },
               ].map((opt) => {
                 const active = paymentType === opt.key;
                 return (
@@ -2239,7 +2335,7 @@ function SellView({ items, onComplete }) {
             )}
 
             {paymentType !== "none" && (
-              <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+              <div className="sr-pay-mode" style={{ display: "flex", gap: 6, marginBottom: 4 }}>
                 {PAYMENT_MODES.map((m) => (
                   <button
                     key={m}
@@ -2331,13 +2427,6 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
               </button>
             );
           })}
-        </div>
-      )}
-
-      {isAdmin && (
-        <div className="sr-mobile-backup" style={{ display: "none", gap: 8, marginBottom: 14 }}>
-          <IconButton icon={DatabaseBackup} label="Download backup" onClick={onBackup} variant="ghost" />
-          <IconButton icon={UploadCloud} label="Restore backup" onClick={onRestore} variant="ghost" />
         </div>
       )}
 
@@ -2504,7 +2593,7 @@ function CustomersView({ invoices, returns, onView }) {
           {totalDue > 0 && <StatCard label="Balance due" value={currency(totalDue)} accent={AMBER_DARK} />}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+        <div className="sr-cust-hist-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
           <div style={{ fontSize: 12.5, fontWeight: 600, color: SLATE, textTransform: "uppercase", letterSpacing: 0.4 }}>
             Purchase history {hq && `(${historyOrders.length} of ${selected.orders.length})`}
           </div>
@@ -2571,14 +2660,14 @@ function CustomersView({ invoices, returns, onView }) {
     <div>
       <Header title="Customers" subtitle={`${customers.length} customer${customers.length === 1 ? "" : "s"} on record`} />
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 18, alignItems: "center" }}>
+      <div className="sr-cust-search-row" style={{ display: "flex", gap: 8, marginBottom: 18, alignItems: "center" }}>
         <div className="sr-search" style={{ position: "relative", maxWidth: 340, flex: 1 }}>
           <Search size={15} color={SLATE} style={{ position: "absolute", left: 12, top: 12 }} />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") searchAndOpen(); }}
-            placeholder="Search customer by name for full history…"
+            placeholder="Search customer by name…"
             style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", fontSize: 13.5, color: INK }}
           />
         </div>
@@ -2957,7 +3046,7 @@ function InvoiceModal({ invoice, onClose, onDownloadPdf, onSharePdf, onStartRetu
 
           {recordingPayment && (
             <div style={{ border: `1px solid ${LINE}`, borderRadius: 9, padding: 12, marginTop: 6 }}>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <div className="sr-pay-form-row" style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <input
                   type="number" min="0" step="0.01" max={due}
                   value={payAmount}
