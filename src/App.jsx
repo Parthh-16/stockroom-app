@@ -2111,13 +2111,18 @@ function SellView({ items, onComplete }) {
 // ---------------- Invoices list ----------------
 
 function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedName, needsReconnect, onReconnect, fsaSupported, savingFile, onBackup, onRestore, isAdmin }) {
+  const [creatorFilter, setCreatorFilter] = useState("all"); // "all" | "staff" | "admin" — Admin only
   const returnedTotalFor = (invoiceId) =>
     (returns || []).filter((r) => r.invoiceId === invoiceId).reduce((s, r) => s + r.total, 0);
+  const visibleInvoices =
+    isAdmin && creatorFilter !== "all"
+      ? invoices.filter((inv) => (creatorFilter === "staff" ? inv.createdByRole === "staff" : inv.createdByRole !== "staff"))
+      : invoices;
   return (
     <div>
       <Header
         title="Invoices"
-        subtitle={`${invoices.length} invoice${invoices.length === 1 ? "" : "s"} recorded`}
+        subtitle={`${visibleInvoices.length} invoice${visibleInvoices.length === 1 ? "" : "s"} ${creatorFilter === "all" ? "recorded" : "shown"}`}
         actions={
           <>
             <IconButton icon={Download} label="Export a copy" onClick={onExportCopy} variant="ghost" />
@@ -2125,6 +2130,31 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
           </>
         }
       />
+
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+          {[
+            { key: "all", label: "All invoices" },
+            { key: "staff", label: "Staff sales" },
+            { key: "admin", label: "Admin sales" },
+          ].map((opt) => {
+            const active = creatorFilter === opt.key;
+            return (
+              <button
+                key={opt.key}
+                onClick={() => setCreatorFilter(opt.key)}
+                style={{
+                  padding: "6px 13px", borderRadius: 999, border: `1px solid ${active ? AMBER_DARK : LINE}`,
+                  background: active ? AMBER_TINT : "var(--sr-card-bg)", color: active ? AMBER_DARK : SLATE,
+                  fontSize: 12.5, fontWeight: 600,
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {isAdmin && (
         <div className="sr-mobile-backup" style={{ display: "none", gap: 8, marginBottom: 14 }}>
@@ -2156,11 +2186,15 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
         )}
       </div>
 
-      {invoices.length === 0 ? (
-        <EmptyState icon={Receipt} title="No invoices yet" body="Completed sales will show up here." />
+      {visibleInvoices.length === 0 ? (
+        <EmptyState
+          icon={Receipt}
+          title={invoices.length === 0 ? "No invoices yet" : "No matches for this filter"}
+          body={invoices.length === 0 ? "Completed sales will show up here." : "Try a different filter above."}
+        />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {invoices.map((inv) => {
+          {visibleInvoices.map((inv) => {
             const returnedAmt = returnedTotalFor(inv.id);
             const staffMade = inv.createdByRole === "staff";
             return (
