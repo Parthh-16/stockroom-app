@@ -123,9 +123,16 @@ function unitLabel(unit, qty) {
   return opt.label.toLowerCase();
 }
 
-const AUTH_KEY = "stockroom:auth";
+const AUTH_KEY = "stockroom:auth"; // legacy single-account key, kept only for one-time migration
+const USERS_KEY = "stockroom:users";
 const SESSION_KEY = "stockroom:session";
 const DEFAULT_AUTH = { username: "Admin", password: "Admin@123" };
+// Staff accounts only ever see these tabs — everything else (Dashboard,
+// Inventory, Returns, Customers) is Admin-only.
+const STAFF_ALLOWED_TABS = ["sell", "invoices"];
+function defaultAdminUser() {
+  return { id: "user-admin-default", username: DEFAULT_AUTH.username, password: DEFAULT_AUTH.password, role: "admin" };
+}
 
 // ---- lazy-load jsPDF from CDN, once ----
 let jsPDFPromise = null;
@@ -263,16 +270,32 @@ export default function StockroomApp() {
   const [pendingRestore, setPendingRestore] = useState(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [preparingCatalog, setPreparingCatalog] = useState(false);
-  const [auth, setAuth] = useState(DEFAULT_AUTH);
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [currentUserId, setCurrentUserId] = useState(null);
   const [theme, setTheme] = useState("light");
   const [accountOpen, setAccountOpen] = useState(false);
+  const [manageUsersOpen, setManageUsersOpen] = useState(false);
   const [focusSearchPending, setFocusSearchPending] = useState(false);
   const toastTimer = useRef(null);
   const restoreInputRef = useRef(null);
   const pendingDeleteRef = useRef(null);
   const searchInputRef = useRef(null);
   const fsaSupported = typeof window !== "undefined" && !!window.showSaveFilePicker;
+
+  // ---- derived auth/role state ----
+  const currentUser = users.find((u) => u.id === currentUserId) || null;
+  const loggedIn = !!currentUser;
+  const isAdmin = !currentUser || currentUser.role === "admin";
+  const isStaff = currentUser?.role === "staff";
+
+  // Staff land on "sell" if a role change or a stale tab ever puts them
+  // somewhere off-limits — this is a safety net; attemptLogin already
+  // sends them to the right tab on sign-in.
+  useEffect(() => {
+    if (loggedIn && isStaff && !STAFF_ALLOWED_TABS.includes(tab)) {
+      setTab("sell");
+    }
+  }, [loggedIn, isStaff, tab]);
 
   useEffect(() => {
     try {
@@ -304,13 +327,13 @@ export default function StockroomApp() {
       const isTyping =
         target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || target?.isContentEditable;
       const modalOpen =
-        editing || confirmDelete || viewInvoice || viewReturn || returningInvoice || pendingRestore || shareOpen || accountOpen;
+        editing || confirmDelete || viewInvoice || viewReturn || returningInvoice || pendingRestore || shareOpen || accountOpen || manageUsersOpen;
       if (!loggedIn || isTyping || modalOpen || e.metaKey || e.ctrlKey || e.altKey) return;
 
       if (e.key === "/") {
         e.preventDefault();
         if (tab === "inventory") searchInputRef.current?.focus();
-        else {
+        else if (!isStaff) {
           setFocusSearchPending(true);
           setTab("inventory");
         }
@@ -321,7 +344,7 @@ export default function StockroomApp() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [tab, loggedIn, editing, confirmDelete, viewInvoice, viewReturn, returningInvoice, pendingRestore, shareOpen, accountOpen]);
+  }, [tab, loggedIn, isStaff, editing, confirmDelete, viewInvoice, viewReturn, returningInvoice, pendingRestore, shareOpen, accountOpen, manageUsersOpen]);
 
   useEffect(() => {
     (async () => {
@@ -332,20 +355,38 @@ export default function StockroomApp() {
       try { const s = await window.storage.get(RETURN_SEQ_KEY); if (s?.value) setReturnSeq(JSON.parse(s.value)); } catch (e) {}
       setLoaded(true);
 
-      // ---- auth: load a saved login in the background; default already active ----
+      // ---- accounts: load the user list, migrating the old single-login format if needed ----
+      let loadedUsers = null;
       try {
-        const s = await window.storage.get(AUTH_KEY);
+        const s = await window.storage.get(USERS_KEY);
         if (s?.value) {
           const parsed = JSON.parse(s.value);
-          if (parsed?.username && parsed?.password) setAuth(parsed);
-        } else {
-          window.storage.set(AUTH_KEY, JSON.stringify(DEFAULT_AUTH)).catch(() => {});
+          if (Array.isArray(parsed) && parsed.length) loadedUsers = parsed;
         }
       } catch (e) {}
 
+      if (!loadedUsers) {
+        // No account list yet — either a brand-new install, or an app
+        // upgrading from the old single-login format. Carry the old
+        // login over as the first Admin account so nobody gets locked out.
+        let seeded = [defaultAdminUser()];
+        try {
+          const legacy = await window.storage.get(AUTH_KEY);
+          if (legacy?.value) {
+            const parsedLegacy = JSON.parse(legacy.value);
+            if (parsedLegacy?.username && parsedLegacy?.password) {
+              seeded = [{ id: "user-admin-default", username: parsedLegacy.username, password: parsedLegacy.password, role: "admin" }];
+            }
+          }
+        } catch (e) {}
+        loadedUsers = seeded;
+        window.storage.set(USERS_KEY, JSON.stringify(seeded)).catch(() => {});
+      }
+      setUsers(loadedUsers);
+
       try {
         const s = await window.storage.get(SESSION_KEY);
-        if (s?.value === "1") setLoggedIn(true);
+        if (s?.value && loadedUsers.some((u) => u.id === s.value)) setCurrentUserId(s.value);
       } catch (e) {}
 
       // ---- restore the previously linked Excel file, if any ----
@@ -392,48 +433,93 @@ export default function StockroomApp() {
 
   // ---- login / account ----
   function attemptLogin(username, password) {
-    const current = auth || DEFAULT_AUTH;
-    if (username.trim() === current.username && password === current.password) {
-      setLoggedIn(true);
-      window.storage.set(SESSION_KEY, "1").catch(() => {});
+    const match = users.find(
+      (u) => u.username.trim().toLowerCase() === username.trim().toLowerCase() && u.password === password
+    );
+    if (match) {
+      setCurrentUserId(match.id);
+      setTab(match.role === "staff" ? "sell" : "dashboard");
+      window.storage.set(SESSION_KEY, match.id).catch(() => {});
       return true;
     }
     return false;
   }
 
   function logout() {
-    setLoggedIn(false);
-    window.storage.set(SESSION_KEY, "0").catch(() => {});
+    setCurrentUserId(null);
+    window.storage.set(SESSION_KEY, "").catch(() => {});
   }
 
+  // Resets (or recreates) the default Admin account's password without
+  // touching any other accounts, so a lockout on one login doesn't wipe
+  // out the accounts Admin has already created for staff.
   async function resetAuthToDefault() {
-    setAuth(DEFAULT_AUTH);
+    const idx = users.findIndex((u) => u.role === "admin");
+    const nextUsers =
+      idx >= 0
+        ? users.map((u, i) => (i === idx ? { ...u, username: DEFAULT_AUTH.username, password: DEFAULT_AUTH.password } : u))
+        : [...users, defaultAdminUser()];
+    setUsers(nextUsers);
+    setCurrentUserId(null);
     try {
-      await window.storage.set(AUTH_KEY, JSON.stringify(DEFAULT_AUTH));
-      await window.storage.set(SESSION_KEY, "0");
+      await window.storage.set(USERS_KEY, JSON.stringify(nextUsers));
+      await window.storage.set(SESSION_KEY, "");
     } catch (e) {}
     showToast(`Login reset — use ${DEFAULT_AUTH.username} / ${DEFAULT_AUTH.password}`);
   }
 
   // returns "" on success, or an error message to show in the form
   async function changeCredentials({ currentPassword, newUsername, newPassword }) {
-    const current = auth || DEFAULT_AUTH;
-    if (currentPassword !== current.password) {
+    if (!currentUser) return "You're not signed in.";
+    if (currentPassword !== currentUser.password) {
       return "Current password is incorrect.";
     }
-    const nextAuth = {
-      username: newUsername?.trim() ? newUsername.trim() : current.username,
-      password: newPassword ? newPassword : current.password,
-    };
-    setAuth(nextAuth);
+    const trimmedUsername = newUsername?.trim();
+    if (trimmedUsername && users.some((u) => u.id !== currentUser.id && u.username.trim().toLowerCase() === trimmedUsername.toLowerCase())) {
+      return "That ID is already in use.";
+    }
+    const nextUsers = users.map((u) =>
+      u.id === currentUser.id
+        ? { ...u, username: trimmedUsername ? trimmedUsername : u.username, password: newPassword ? newPassword : u.password }
+        : u
+    );
+    setUsers(nextUsers);
     try {
-      await window.storage.set(AUTH_KEY, JSON.stringify(nextAuth));
+      await window.storage.set(USERS_KEY, JSON.stringify(nextUsers));
     } catch (e) {
       return "Couldn't save the new login — try again.";
     }
     setAccountOpen(false);
     showToast("Login details updated");
     return "";
+  }
+
+  // ---- account management (Admin only) ----
+  // returns "" on success, or an error message to show in the form
+  async function addUser({ username, password, role }) {
+    const trimmed = username?.trim();
+    if (!trimmed) return "Enter an ID.";
+    if (!password || password.length < 4) return "Password should be at least 4 characters.";
+    if (users.some((u) => u.username.trim().toLowerCase() === trimmed.toLowerCase())) return "That ID is already in use.";
+    const nextUsers = [...users, { id: uid("user-"), username: trimmed, password, role: role === "admin" ? "admin" : "staff" }];
+    setUsers(nextUsers);
+    try {
+      await window.storage.set(USERS_KEY, JSON.stringify(nextUsers));
+    } catch (e) {
+      return "Couldn't save the new account — try again.";
+    }
+    showToast(`Account created for ${trimmed}`);
+    return "";
+  }
+
+  async function removeUser(userId) {
+    if (userId === currentUserId) return; // can't remove the account you're signed in with
+    const nextUsers = users.filter((u) => u.id !== userId);
+    setUsers(nextUsers);
+    try {
+      await window.storage.set(USERS_KEY, JSON.stringify(nextUsers));
+    } catch (e) {}
+    showToast("Account removed");
   }
 
   // ---- stock CRUD ----
@@ -1040,8 +1126,10 @@ export default function StockroomApp() {
         linkedName={linkedName}
         onBackup={downloadBackup}
         onRestore={pickRestoreFile}
-        username={(auth || DEFAULT_AUTH).username}
+        username={currentUser?.username || ""}
+        isAdmin={isAdmin}
         onAccount={() => setAccountOpen(true)}
+        onManageUsers={() => setManageUsersOpen(true)}
         onLogout={logout}
         theme={theme}
         onToggleTheme={toggleTheme}
@@ -1049,12 +1137,12 @@ export default function StockroomApp() {
       <input ref={restoreInputRef} type="file" accept="application/json" onChange={handleRestoreFile} style={{ display: "none" }} />
 
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-        <MobileNav tab={tab} setTab={setTab} />
+        <MobileNav tab={tab} setTab={setTab} isAdmin={isAdmin} />
         <main style={{ flex: 1, padding: "28px 32px 60px", overflowY: "auto" }} className="stockroom-scroll sr-main">
-          {tab === "dashboard" && (
+          {tab === "dashboard" && isAdmin && (
             <DashboardView items={items} invoices={invoices} returns={returns} onGoToSell={() => setTab("sell")} onGoToInventory={() => setTab("inventory")} />
           )}
-          {tab === "inventory" && (
+          {tab === "inventory" && isAdmin && (
             <InventoryView
               items={filteredItems}
               allCount={items.length}
@@ -1083,12 +1171,13 @@ export default function StockroomApp() {
               savingFile={savingFile}
               onBackup={downloadBackup}
               onRestore={pickRestoreFile}
+              isAdmin={isAdmin}
             />
           )}
-          {tab === "customers" && (
+          {tab === "customers" && isAdmin && (
             <CustomersView invoices={invoices} returns={returns} onView={(inv) => setViewInvoice(inv)} />
           )}
-          {tab === "returns" && (
+          {tab === "returns" && isAdmin && (
             <ReturnsView returns={returns} onView={(r) => setViewReturn(r)} />
           )}
         </main>
@@ -1146,9 +1235,18 @@ export default function StockroomApp() {
       )}
       {accountOpen && (
         <AccountModal
-          username={(auth || DEFAULT_AUTH).username}
+          username={currentUser?.username || ""}
           onClose={() => setAccountOpen(false)}
           onSubmit={changeCredentials}
+        />
+      )}
+      {manageUsersOpen && isAdmin && (
+        <ManageUsersModal
+          users={users}
+          currentUserId={currentUserId}
+          onClose={() => setManageUsersOpen(false)}
+          onAddUser={addUser}
+          onRemoveUser={removeUser}
         />
       )}
       {toast && <Toast msg={toast.msg} kind={toast.kind} action={toast.action} />}
@@ -1361,10 +1459,128 @@ function AccountModal({ username, onClose, onSubmit }) {
   );
 }
 
+function ManageUsersModal({ users, currentUserId, onClose, onAddUser, onRemoveUser }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("staff");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmRemoveId, setConfirmRemoveId] = useState(null);
+
+  async function submit() {
+    setError("");
+    setBusy(true);
+    const err = await onAddUser({ username, password, role });
+    setBusy(false);
+    if (err) setError(err);
+    else {
+      setUsername("");
+      setPassword("");
+      setRole("staff");
+    }
+  }
+
+  return (
+    <Overlay onClose={onClose}>
+      <div className="sr-modal-pad" style={{ padding: "22px 24px 24px" }}>
+        <ModalHeader title="Manage accounts" onClose={onClose} />
+        <div style={{ color: SLATE, fontSize: 12.5, marginTop: 4 }}>
+          Staff accounts can only use New sale and Invoices — everything else is Admin-only.
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16, maxHeight: 230, overflowY: "auto" }} className="stockroom-scroll">
+          {users.map((u) => (
+            <div
+              key={u.id}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: 9, border: `1px solid ${LINE}` }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: INK, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {u.username}
+                  {u.id === currentUserId ? " (you)" : ""}
+                </div>
+                <div style={{ fontSize: 11, color: SLATE, textTransform: "capitalize" }}>{u.role}</div>
+              </div>
+              {u.id !== currentUserId &&
+                (confirmRemoveId === u.id ? (
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <TextButton onClick={() => setConfirmRemoveId(null)}>Cancel</TextButton>
+                    <button
+                      onClick={() => {
+                        onRemoveUser(u.id);
+                        setConfirmRemoveId(null);
+                      }}
+                      style={{ padding: "6px 10px", borderRadius: 7, border: "none", background: RED, color: "#fff", fontWeight: 600, fontSize: 12 }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmRemoveId(u.id)}
+                    title="Remove account"
+                    style={{ width: 30, height: 30, borderRadius: 7, border: `1px solid ${LINE}`, background: "transparent", color: RED, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                ))}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 18, paddingTop: 16, borderTop: `1px solid ${LINE}` }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 10 }}>Add new account</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Field label="ID">
+              <input
+                style={inputStyle}
+                value={username}
+                onChange={(e) => { setUsername(e.target.value); setError(""); }}
+                placeholder="e.g. Rahul"
+              />
+            </Field>
+            <Field label="Password">
+              <input
+                type="password"
+                style={inputStyle}
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                placeholder="At least 4 characters"
+              />
+            </Field>
+            <Field label="Role">
+              <select style={inputStyle} value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="staff">Staff — Sell + Invoices only</option>
+                <option value="admin">Admin — full access</option>
+              </select>
+            </Field>
+          </div>
+
+          {error && (
+            <div style={{ marginTop: 12, fontSize: 12.5, color: RED, display: "flex", alignItems: "center", gap: 6 }}>
+              <AlertTriangle size={13} /> {error}
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 16 }}>
+            <button
+              onClick={submit}
+              disabled={busy}
+              style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: INK, color: PAPER, fontWeight: 700, fontSize: 13, opacity: busy ? 0.7 : 1 }}
+            >
+              {busy ? "Adding…" : "Add account"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
 // ---------------- Sidebar ----------------
 
-function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, username, onAccount, onLogout, theme, onToggleTheme }) {
-  const items = [
+function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, username, isAdmin, onAccount, onManageUsers, onLogout, theme, onToggleTheme }) {
+  const allItems = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "inventory", label: "Inventory", icon: Boxes, count: counts.items },
     { key: "sell", label: "New sale", icon: ShoppingCart },
@@ -1372,6 +1588,7 @@ function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, usernam
     { key: "returns", label: "Returns", icon: RotateCcw, count: counts.returns },
     { key: "customers", label: "Customers", icon: Users, count: counts.customers },
   ];
+  const items = isAdmin ? allItems : allItems.filter((i) => STAFF_ALLOWED_TABS.includes(i.key));
   return (
     <aside className="sr-sidebar" style={{ width: 236, background: SIDEBAR_BG, color: SIDEBAR_TEXT, display: "flex", flexDirection: "column", padding: "26px 16px", flexShrink: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "0 8px 26px" }}>
@@ -1420,21 +1637,32 @@ function Sidebar({ tab, setTab, counts, linkedName, onBackup, onRestore, usernam
         })}
       </nav>
 
-      <div style={{ marginTop: "auto", padding: "13px 12px", borderTop: "1px solid #333E52", fontSize: 11.5, color: "#7C8494", lineHeight: 1.5 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, color: linkedName ? "#8FD1A8" : "#7C8494", marginBottom: 4 }}>
-          <Link2 size={12} />
-          {linkedName ? `Auto-saving to ${linkedName}` : "No file linked yet"}
+      {isAdmin && (
+        <div style={{ marginTop: "auto", padding: "13px 12px", borderTop: "1px solid #333E52", fontSize: 11.5, color: "#7C8494", lineHeight: 1.5 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: linkedName ? "#8FD1A8" : "#7C8494", marginBottom: 4 }}>
+            <Link2 size={12} />
+            {linkedName ? `Auto-saving to ${linkedName}` : "No file linked yet"}
+          </div>
+          Link a local Excel file from the Invoices tab so every sale updates it in place.
         </div>
-        Link a local Excel file from the Invoices tab so every sale updates it in place.
-      </div>
+      )}
 
-      <div style={{ padding: "13px 12px 2px", borderTop: "1px solid #333E52", display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6B7280", marginBottom: 2 }}>Data safety net</div>
-        <SidebarSmallButton icon={DatabaseBackup} label="Download backup" onClick={onBackup} />
-        <SidebarSmallButton icon={UploadCloud} label="Restore from backup" onClick={onRestore} />
-      </div>
+      {isAdmin && (
+        <div style={{ padding: "13px 12px 2px", borderTop: "1px solid #333E52", display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6B7280", marginBottom: 2 }}>Data safety net</div>
+          <SidebarSmallButton icon={DatabaseBackup} label="Download backup" onClick={onBackup} />
+          <SidebarSmallButton icon={UploadCloud} label="Restore from backup" onClick={onRestore} />
+        </div>
+      )}
 
-      <div style={{ padding: "13px 12px 2px", borderTop: "1px solid #333E52", display: "flex", flexDirection: "column", gap: 6 }}>
+      {isAdmin && (
+        <div style={{ padding: "13px 12px 2px", borderTop: "1px solid #333E52", display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6B7280", marginBottom: 2 }}>Accounts</div>
+          <SidebarSmallButton icon={Users} label="Manage accounts" onClick={onManageUsers} />
+        </div>
+      )}
+
+      <div style={{ marginTop: isAdmin ? 0 : "auto", padding: "13px 12px 2px", borderTop: "1px solid #333E52", display: "flex", flexDirection: "column", gap: 6 }}>
         <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6B7280", marginBottom: 2 }}>{username}</div>
         <SidebarSmallButton icon={Users} label="Change login details" onClick={onAccount} />
         <SidebarSmallButton icon={X} label="Log out" onClick={onLogout} />
@@ -1459,8 +1687,8 @@ function SidebarSmallButton({ icon: Icon, label, onClick }) {
   );
 }
 
-function MobileNav({ tab, setTab }) {
-  const items = [
+function MobileNav({ tab, setTab, isAdmin }) {
+  const allItems = [
     { key: "dashboard", label: "Home", icon: LayoutDashboard },
     { key: "inventory", label: "Stock", icon: Boxes },
     { key: "sell", label: "Sell", icon: ShoppingCart },
@@ -1468,6 +1696,7 @@ function MobileNav({ tab, setTab }) {
     { key: "returns", label: "Returns", icon: RotateCcw },
     { key: "customers", label: "Customers", icon: Users },
   ];
+  const items = isAdmin ? allItems : allItems.filter((i) => STAFF_ALLOWED_TABS.includes(i.key));
   return (
     <div className="sr-mobile-nav" style={{ display: "none", borderBottom: `1px solid ${LINE}`, background: PAPER }}>
       {items.map(({ key, label, icon: Icon }) => {
@@ -1877,7 +2106,7 @@ function SellView({ items, onComplete }) {
 
 // ---------------- Invoices list ----------------
 
-function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedName, needsReconnect, onReconnect, fsaSupported, savingFile, onBackup, onRestore }) {
+function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedName, needsReconnect, onReconnect, fsaSupported, savingFile, onBackup, onRestore, isAdmin }) {
   const returnedTotalFor = (invoiceId) =>
     (returns || []).filter((r) => r.invoiceId === invoiceId).reduce((s, r) => s + r.total, 0);
   return (
@@ -1893,10 +2122,12 @@ function InvoicesView({ invoices, returns, onExportCopy, onView, onLink, linkedN
         }
       />
 
-      <div className="sr-mobile-backup" style={{ display: "none", gap: 8, marginBottom: 14 }}>
-        <IconButton icon={DatabaseBackup} label="Download backup" onClick={onBackup} variant="ghost" />
-        <IconButton icon={UploadCloud} label="Restore backup" onClick={onRestore} variant="ghost" />
-      </div>
+      {isAdmin && (
+        <div className="sr-mobile-backup" style={{ display: "none", gap: 8, marginBottom: 14 }}>
+          <IconButton icon={DatabaseBackup} label="Download backup" onClick={onBackup} variant="ghost" />
+          <IconButton icon={UploadCloud} label="Restore backup" onClick={onRestore} variant="ghost" />
+        </div>
+      )}
 
       {needsReconnect && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, fontSize: 12.5, color: AMBER_DARK, background: AMBER_TINT, border: `1px solid ${AMBER}`, borderRadius: 9, padding: "9px 13px" }}>
