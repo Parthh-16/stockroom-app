@@ -241,7 +241,7 @@ function dataUrlToExcelImage(dataUrl) {
 
 // Adds an image into a cell, sized to fit a small square thumbnail.
 // rowIndex/colIndex are 0-based (row 0 = row 1 in Excel, col 0 = column A).
-function addThumbnailImage(workbook, worksheet, dataUrl, rowIndex, colIndex, sizePx = 40) {
+function addThumbnailImage(workbook, worksheet, dataUrl, rowIndex, colIndex, sizePx = 80) {
   const parsed = dataUrlToExcelImage(dataUrl);
   if (!parsed) return false;
   const imageId = workbook.addImage({ base64: parsed.base64, extension: parsed.extension });
@@ -704,7 +704,7 @@ export default function StockroomApp() {
     const ws = workbook.addWorksheet("Inventory");
 
     ws.columns = [
-      { header: "Photo", key: "photo", width: 8 },
+      { header: "Photo", key: "photo", width: 15 },
       { header: "SKU", key: "sku", width: 12 },
       { header: "Name", key: "name", width: 26 },
       { header: "Category", key: "category", width: 16 },
@@ -724,9 +724,9 @@ export default function StockroomApp() {
         price: i.price,
         value: +(i.price * i.quantity).toFixed(2),
       });
-      row.height = 32;
+      row.height = 62;
       if (i.image) {
-        addThumbnailImage(workbook, ws, i.image, row.number - 1, 0, 30);
+        addThumbnailImage(workbook, ws, i.image, row.number - 1, 0, 80);
       }
     });
 
@@ -745,7 +745,7 @@ export default function StockroomApp() {
     const ws = workbook.addWorksheet("Price List");
 
     ws.columns = [
-      { header: "Photo", key: "photo", width: 8 },
+      { header: "Photo", key: "photo", width: 15 },
       { header: "Item", key: "item", width: 28 },
       { header: "Category", key: "category", width: 18 },
       { header: "Price", key: "price", width: 12 },
@@ -761,9 +761,9 @@ export default function StockroomApp() {
         price: i.price,
         availability: i.quantity > 0 ? "In Stock" : "Out of Stock",
       });
-      row.height = 32;
+      row.height = 62;
       if (i.image) {
-        addThumbnailImage(workbook, ws, i.image, row.number - 1, 0, 30);
+        addThumbnailImage(workbook, ws, i.image, row.number - 1, 0, 80);
       }
     });
 
