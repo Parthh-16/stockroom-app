@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { saveFileHandle, loadFileHandle, clearFileHandle } from "./fileHandleStore.js";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import {
   Package, Plus, Pencil, Trash2, Search, Download, Receipt,
   ShoppingCart, X, Check, AlertTriangle, ChevronRight, Boxes,
@@ -224,6 +225,45 @@ function resizeImage(file, maxDim = 240) {
     reader.onerror = () => reject(new Error("Could not read file"));
     reader.readAsDataURL(file);
   });
+}
+
+// ---- ExcelJS helpers: embedding real images into .xlsx files ----
+// (the older `xlsx` / SheetJS library used elsewhere in this file can only write
+// cell data — it has no support for embedding pictures — so any export that
+// needs to show an item's photo goes through ExcelJS instead.)
+function dataUrlToExcelImage(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== "string") return null;
+  const match = dataUrl.match(/^data:image\/(png|jpe?g);base64,(.+)$/i);
+  if (!match) return null;
+  const ext = match[1].toLowerCase() === "png" ? "png" : "jpeg";
+  return { base64: match[2], extension: ext };
+}
+
+// Adds an image into a cell, sized to fit a small square thumbnail.
+// rowIndex/colIndex are 0-based (row 0 = row 1 in Excel, col 0 = column A).
+function addThumbnailImage(workbook, worksheet, dataUrl, rowIndex, colIndex, sizePx = 40) {
+  const parsed = dataUrlToExcelImage(dataUrl);
+  if (!parsed) return false;
+  const imageId = workbook.addImage({ base64: parsed.base64, extension: parsed.extension });
+  worksheet.addImage(imageId, {
+    tl: { col: colIndex + 0.05, row: rowIndex + 0.05 },
+    ext: { width: sizePx, height: sizePx },
+  });
+  return true;
+}
+
+// Builds an ArrayBuffer from an ExcelJS workbook and triggers a browser download.
+async function downloadExcelJsWorkbook(workbook, filename) {
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
 function buildWorkbook(invoices, returns = []) {
@@ -659,34 +699,80 @@ export default function StockroomApp() {
     showToast("Backup restored");
   }
 
-  function exportInventory() {
-    const rows = items.map((i) => ({
-      SKU: i.sku, Name: i.name, Category: i.category || "",
-      Quantity: i.quantity, "Unit Price": i.price, "Stock Value": +(i.price * i.quantity).toFixed(2),
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws["!cols"] = [{ wch: 12 }, { wch: 26 }, { wch: 16 }, { wch: 10 }, { wch: 12 }, { wch: 12 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Inventory");
-    XLSX.writeFile(wb, `inventory_${Date.now()}.xlsx`);
-    showToast("Inventory exported");
+  async function exportInventory() {
+    const workbook = new ExcelJS.Workbook();
+    const ws = workbook.addWorksheet("Inventory");
+
+    ws.columns = [
+      { header: "Photo", key: "photo", width: 8 },
+      { header: "SKU", key: "sku", width: 12 },
+      { header: "Name", key: "name", width: 26 },
+      { header: "Category", key: "category", width: 16 },
+      { header: "Quantity", key: "quantity", width: 10 },
+      { header: "Unit Price", key: "price", width: 12 },
+      { header: "Stock Value", key: "value", width: 12 },
+    ];
+    ws.getRow(1).font = { bold: true };
+
+    items.forEach((i) => {
+      const row = ws.addRow({
+        photo: "",
+        sku: i.sku,
+        name: i.name,
+        category: i.category || "",
+        quantity: i.quantity,
+        price: i.price,
+        value: +(i.price * i.quantity).toFixed(2),
+      });
+      row.height = 32;
+      if (i.image) {
+        addThumbnailImage(workbook, ws, i.image, row.number - 1, 0, 30);
+      }
+    });
+
+    try {
+      await downloadExcelJsWorkbook(workbook, `inventory_${Date.now()}.xlsx`);
+      showToast("Inventory exported");
+    } catch (err) {
+      showToast("Couldn't export inventory", "warn");
+    }
   }
 
   // ---- shareable stock lists for customers ----
   // Option 1: editable Excel with prices — customer/owner can open and tweak in Excel.
-  function downloadPriceListExcel() {
-    const rows = items.map((i) => ({
-      Item: i.name,
-      Category: i.category || "",
-      Price: i.price,
-      Availability: i.quantity > 0 ? "In Stock" : "Out of Stock",
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws["!cols"] = [{ wch: 28 }, { wch: 18 }, { wch: 12 }, { wch: 14 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Price List");
-    XLSX.writeFile(wb, `price_list_${Date.now()}.xlsx`);
-    showToast("Price list downloaded (editable in Excel)");
+  async function downloadPriceListExcel() {
+    const workbook = new ExcelJS.Workbook();
+    const ws = workbook.addWorksheet("Price List");
+
+    ws.columns = [
+      { header: "Photo", key: "photo", width: 8 },
+      { header: "Item", key: "item", width: 28 },
+      { header: "Category", key: "category", width: 18 },
+      { header: "Price", key: "price", width: 12 },
+      { header: "Availability", key: "availability", width: 14 },
+    ];
+    ws.getRow(1).font = { bold: true };
+
+    items.forEach((i) => {
+      const row = ws.addRow({
+        photo: "",
+        item: i.name,
+        category: i.category || "",
+        price: i.price,
+        availability: i.quantity > 0 ? "In Stock" : "Out of Stock",
+      });
+      row.height = 32;
+      if (i.image) {
+        addThumbnailImage(workbook, ws, i.image, row.number - 1, 0, 30);
+      }
+    });
+
+    try {
+      await downloadExcelJsWorkbook(workbook, `price_list_${Date.now()}.xlsx`);
+      showToast("Price list downloaded (editable in Excel)");
+    } catch (err) {
+      showToast("Couldn't export price list", "warn");
+    }
     setShareOpen(false);
   }
 
