@@ -201,6 +201,35 @@ async function shareOrDownloadPdf(blob, filename, shareText) {
   return "downloaded";
 }
 
+// ---- share any generated file via the native share sheet (WhatsApp etc.), ----
+// ---- falling back to a plain download + WhatsApp text chat on desktop ----
+// (native share on mobile lets WhatsApp attach the actual file; desktop browsers
+// don't support sending files through a wa.me link, so there we just download
+// the file and open a WhatsApp chat with a text note instead)
+async function shareOrDownloadFile(blob, filename, mimeType, shareText) {
+  try {
+    const file = new File([blob], filename, { type: mimeType });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename, text: shareText });
+      return "shared";
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") return "cancelled"; // user backed out of the share sheet
+    // fall through to the download fallback below
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  const waText = encodeURIComponent(`${shareText}\n\n(Just downloaded "${filename}" — attach it from your Downloads in this chat.)`);
+  window.open(`https://wa.me/?text=${waText}`, "_blank");
+  return "downloaded";
+}
+
 function resizeImage(file, maxDim = 240) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -264,6 +293,12 @@ async function downloadExcelJsWorkbook(workbook, filename) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// Same as above, but returns the Blob instead of downloading it (used for WhatsApp sharing).
+async function excelJsWorkbookToBlob(workbook) {
+  const buffer = await workbook.xlsx.writeBuffer();
+  return new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 }
 
 function buildWorkbook(invoices, returns = []) {
@@ -339,6 +374,7 @@ export default function StockroomApp() {
   const [pendingRestore, setPendingRestore] = useState(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [preparingCatalog, setPreparingCatalog] = useState(false);
+  const [preparingPriceList, setPreparingPriceList] = useState(false);
   const [users, setUsers] = useState([]);
   const [currentUserId, setCurrentUserId] = useState(null);
   const [theme, setTheme] = useState("light");
@@ -740,7 +776,7 @@ export default function StockroomApp() {
 
   // ---- shareable stock lists for customers ----
   // Option 1: editable Excel with prices — customer/owner can open and tweak in Excel.
-  async function downloadPriceListExcel() {
+  function buildPriceListWorkbook() {
     const workbook = new ExcelJS.Workbook();
     const ws = workbook.addWorksheet("Price List");
 
@@ -767,13 +803,37 @@ export default function StockroomApp() {
       }
     });
 
+    return workbook;
+  }
+
+  async function downloadPriceListExcel() {
     try {
+      const workbook = buildPriceListWorkbook();
       await downloadExcelJsWorkbook(workbook, `price_list_${Date.now()}.xlsx`);
       showToast("Price list downloaded (editable in Excel)");
     } catch (err) {
       showToast("Couldn't export price list", "warn");
     }
     setShareOpen(false);
+  }
+
+  async function sharePriceListExcel() {
+    setPreparingPriceList(true);
+    try {
+      const workbook = buildPriceListWorkbook();
+      const blob = await excelJsWorkbookToBlob(workbook);
+      const result = await shareOrDownloadFile(
+        blob,
+        `price_list_${Date.now()}.xlsx`,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Here's our latest price list"
+      );
+      if (result !== "cancelled") setShareOpen(false);
+    } catch (err) {
+      showToast("Couldn't share the price list — check your connection and try again.", "warn");
+    } finally {
+      setPreparingPriceList(false);
+    }
   }
 
   // Option 2: PDF catalog with no prices — safe to hand straight to customers.
@@ -1425,10 +1485,12 @@ export default function StockroomApp() {
         <ShareStockListModal
           itemCount={items.length}
           preparingCatalog={preparingCatalog}
+          preparingPriceList={preparingPriceList}
           onClose={() => setShareOpen(false)}
           onDownloadCatalog={downloadCatalogPdf}
           onShareCatalog={shareCatalogPdf}
           onDownloadPriceList={downloadPriceListExcel}
+          onSharePriceList={sharePriceListExcel}
         />
       )}
       {pendingRestore && (
@@ -2100,7 +2162,7 @@ function RowIconBtn({ icon: Icon, onClick, danger }) {
 
 // ---------------- Item editor ----------------
 
-function ShareStockListModal({ itemCount, preparingCatalog, onClose, onDownloadCatalog, onShareCatalog, onDownloadPriceList }) {
+function ShareStockListModal({ itemCount, preparingCatalog, preparingPriceList, onClose, onDownloadCatalog, onShareCatalog, onDownloadPriceList, onSharePriceList }) {
   return (
     <Overlay onClose={onClose}>
       <div className="sr-modal-pad" style={{ padding: "22px 24px 24px" }}>
@@ -2150,12 +2212,23 @@ function ShareStockListModal({ itemCount, preparingCatalog, onClose, onDownloadC
             <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 12, lineHeight: 1.5 }}>
               An .xlsx with item, category, price and availability. Fully editable — tweak prices or trim rows before sending it on.
             </div>
-            <button
-              onClick={onDownloadPriceList}
-              style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", color: INK, fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}
-            >
-              <FileSpreadsheet size={14} /> Download Excel price list
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              {onSharePriceList && (
+                <button
+                  onClick={onSharePriceList}
+                  disabled={preparingPriceList}
+                  style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: "#25D366", color: "#fff", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, opacity: preparingPriceList ? 0.7 : 1 }}
+                >
+                  <MessageCircle size={14} /> {preparingPriceList ? "Preparing…" : "WhatsApp"}
+                </button>
+              )}
+              <button
+                onClick={onDownloadPriceList}
+                style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: `1px solid ${LINE}`, background: "var(--sr-card-bg)", color: INK, fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}
+              >
+                <FileSpreadsheet size={14} /> Download Excel
+              </button>
+            </div>
           </div>
         </div>
       </div>
