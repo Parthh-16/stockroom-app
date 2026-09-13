@@ -893,6 +893,13 @@ export default function StockroomApp() {
       doc.setTextColor(...(inStock ? [63, 122, 87] : [181, 72, 61]));
       doc.text(badgeText, badgeX + 8, y + 20);
 
+      const qtyText = `Qty: ${it.quantity}`;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9.5);
+      doc.setTextColor(91, 100, 114);
+      const qtyW = doc.getTextWidth(qtyText);
+      doc.text(qtyText, badgeX - qtyW - 14, y + 20);
+
       y += rowH;
       doc.setDrawColor(228, 220, 200);
       doc.setLineWidth(0.5);
