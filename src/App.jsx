@@ -893,7 +893,7 @@ export default function StockroomApp() {
       doc.setTextColor(...(inStock ? [63, 122, 87] : [181, 72, 61]));
       doc.text(badgeText, badgeX + 8, y + 20);
 
-      const qtyText = `Qty: ${it.quantity}`;
+      const qtyText = `Qty: ${it.quantity} ${unitLabel(it.unit, it.quantity)}`.trim();
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9.5);
       doc.setTextColor(91, 100, 114);
