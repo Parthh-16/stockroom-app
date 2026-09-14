@@ -842,7 +842,8 @@ export default function StockroomApp() {
     const doc = new jsPDF({ unit: "pt", format: "a4" });
     const marginX = 48;
     const rightX = 547;
-    const rowH = 46;
+    const imgSize = 56;
+    const rowH = 70;
     let y = 70;
 
     function drawHeader() {
@@ -870,40 +871,41 @@ export default function StockroomApp() {
       }
       const inStock = it.quantity > 0;
       if (it.image) {
-        try { doc.addImage(it.image, "JPEG", marginX, y, 34, 34); } catch (e) {}
+        try { doc.addImage(it.image, "JPEG", marginX, y, imgSize, imgSize); } catch (e) {}
       } else {
         doc.setDrawColor(228, 220, 200);
-        doc.rect(marginX, y, 34, 34);
+        doc.rect(marginX, y, imgSize, imgSize);
       }
+      const textX = marginX + imgSize + 16;
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(11.5);
+      doc.setFontSize(13);
       doc.setTextColor(28, 36, 49);
-      doc.text(it.name, marginX + 46, y + 15);
+      doc.text(it.name, textX, y + 24);
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(9.5);
+      doc.setFontSize(10);
       doc.setTextColor(91, 100, 114);
-      doc.text(it.category || "", marginX + 46, y + 29);
+      doc.text(it.category || "", textX, y + 44);
 
       const badgeText = inStock ? "In Stock" : "Out of Stock";
       doc.setFontSize(9);
       const badgeW = doc.getTextWidth(badgeText) + 16;
       const badgeX = rightX - badgeW;
       doc.setFillColor(...(inStock ? [237, 247, 240] : [251, 234, 231]));
-      doc.roundedRect(badgeX, y + 8, badgeW, 18, 4, 4, "F");
+      doc.roundedRect(badgeX, y + 14, badgeW, 18, 4, 4, "F");
       doc.setTextColor(...(inStock ? [63, 122, 87] : [181, 72, 61]));
-      doc.text(badgeText, badgeX + 8, y + 20);
+      doc.text(badgeText, badgeX + 8, y + 26);
 
       const qtyText = `Qty: ${it.quantity} ${unitLabel(it.unit, it.quantity)}`.trim();
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9.5);
       doc.setTextColor(91, 100, 114);
       const qtyW = doc.getTextWidth(qtyText);
-      doc.text(qtyText, badgeX - qtyW - 14, y + 20);
+      doc.text(qtyText, badgeX - qtyW - 14, y + 26);
 
       y += rowH;
       doc.setDrawColor(228, 220, 200);
       doc.setLineWidth(0.5);
-      doc.line(marginX, y - 12, rightX, y - 12);
+      doc.line(marginX, y - 14, rightX, y - 14);
     }
 
     return doc;
