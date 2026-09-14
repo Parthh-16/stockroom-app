@@ -842,8 +842,8 @@ export default function StockroomApp() {
     const doc = new jsPDF({ unit: "pt", format: "a4" });
     const marginX = 48;
     const rightX = 547;
-    const imgSize = 56;
-    const rowH = 70;
+    const imgSize = 74;
+    const rowH = 90;
     let y = 70;
 
     function drawHeader() {
@@ -878,34 +878,34 @@ export default function StockroomApp() {
       }
       const textX = marginX + imgSize + 16;
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(13);
+      doc.setFontSize(14);
       doc.setTextColor(28, 36, 49);
-      doc.text(it.name, textX, y + 24);
+      doc.text(it.name, textX, y + 32);
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
+      doc.setFontSize(10.5);
       doc.setTextColor(91, 100, 114);
-      doc.text(it.category || "", textX, y + 44);
+      doc.text(it.category || "", textX, y + 56);
 
       const badgeText = inStock ? "In Stock" : "Out of Stock";
       doc.setFontSize(9);
       const badgeW = doc.getTextWidth(badgeText) + 16;
       const badgeX = rightX - badgeW;
       doc.setFillColor(...(inStock ? [237, 247, 240] : [251, 234, 231]));
-      doc.roundedRect(badgeX, y + 14, badgeW, 18, 4, 4, "F");
+      doc.roundedRect(badgeX, y + 26, badgeW, 18, 4, 4, "F");
       doc.setTextColor(...(inStock ? [63, 122, 87] : [181, 72, 61]));
-      doc.text(badgeText, badgeX + 8, y + 26);
+      doc.text(badgeText, badgeX + 8, y + 38);
 
       const qtyText = `Qty: ${it.quantity} ${unitLabel(it.unit, it.quantity)}`.trim();
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9.5);
       doc.setTextColor(91, 100, 114);
       const qtyW = doc.getTextWidth(qtyText);
-      doc.text(qtyText, badgeX - qtyW - 14, y + 26);
+      doc.text(qtyText, badgeX - qtyW - 14, y + 38);
 
       y += rowH;
       doc.setDrawColor(228, 220, 200);
       doc.setLineWidth(0.5);
-      doc.line(marginX, y - 14, rightX, y - 14);
+      doc.line(marginX, y - 18, rightX, y - 18);
     }
 
     return doc;
