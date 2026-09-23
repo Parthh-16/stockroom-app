@@ -57,21 +57,24 @@ function localDelete(key) {
   }
 }
 
+// IMPORTANT: get() intentionally lets real errors (network failures,
+// permission problems, etc.) throw instead of swallowing them to null.
+// A past version of this file treated "the fetch failed" the same as
+// "nothing is saved here yet" — which meant a brief network hiccup on
+// load could look like empty data, and the app's autosave would then
+// write that emptiness back to Supabase, overwriting real saved data.
+// Callers MUST catch this and treat a thrown error as "unknown", not
+// "empty" — see the loading effect in App.jsx.
 async function get(key) {
   if (LOCAL_ONLY_KEYS.has(key)) return localGet(key);
-  try {
-    const { data, error } = await supabase
-      .from(TABLE)
-      .select("value")
-      .eq("key", key)
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) return null;
-    return { key, value: data.value, shared: true };
-  } catch (e) {
-    console.error("storage.get failed:", e);
-    return null;
-  }
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("value")
+    .eq("key", key)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return { key, value: data.value, shared: true };
 }
 
 async function set(key, value) {

@@ -358,6 +358,7 @@ export default function StockroomApp() {
   const [seq, setSeq] = useState(1);
   const [returnSeq, setReturnSeq] = useState(1);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [bootDone, setBootDone] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const [search, setSearch] = useState("");
@@ -452,14 +453,44 @@ export default function StockroomApp() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [tab, loggedIn, isStaff, editing, confirmDelete, viewInvoice, viewReturn, returningInvoice, pendingRestore, shareOpen, accountOpen, manageUsersOpen, mobileMenuOpen]);
 
+  // Loads the 5 shared data keys. Marks the app as `loaded` — which
+  // switches on the autosave effects below — ONLY if every single fetch
+  // truly succeeded (found a value OR confirmed nothing is saved yet).
+  // If any fetch throws (a network blip, a slow connection, anything),
+  // we do NOT set loaded=true: this is what stops a temporary glitch
+  // from being treated as "there's no data", which would otherwise get
+  // saved right back to Supabase and permanently erase the real data.
+  async function loadCoreData() {
+    setLoadError(false);
+    try {
+      const [stock, sales, seqRes, returnsRes, returnSeqRes] = await Promise.all([
+        window.storage.get(STOCK_KEY),
+        window.storage.get(SALES_KEY),
+        window.storage.get(SEQ_KEY),
+        window.storage.get(RETURNS_KEY),
+        window.storage.get(RETURN_SEQ_KEY),
+      ]);
+      if (stock?.value) setItems(JSON.parse(stock.value));
+      if (sales?.value) setInvoices(JSON.parse(sales.value));
+      if (seqRes?.value) setSeq(JSON.parse(seqRes.value));
+      if (returnsRes?.value) setReturns(JSON.parse(returnsRes.value));
+      if (returnSeqRes?.value) setReturnSeq(JSON.parse(returnSeqRes.value));
+      setLoaded(true);
+      return true;
+    } catch (e) {
+      console.error("Failed to load saved data:", e);
+      setLoadError(true);
+      return false;
+    }
+  }
+
   useEffect(() => {
     (async () => {
-      try { const s = await window.storage.get(STOCK_KEY); if (s?.value) setItems(JSON.parse(s.value)); } catch (e) {}
-      try { const s = await window.storage.get(SALES_KEY); if (s?.value) setInvoices(JSON.parse(s.value)); } catch (e) {}
-      try { const s = await window.storage.get(SEQ_KEY); if (s?.value) setSeq(JSON.parse(s.value)); } catch (e) {}
-      try { const s = await window.storage.get(RETURNS_KEY); if (s?.value) setReturns(JSON.parse(s.value)); } catch (e) {}
-      try { const s = await window.storage.get(RETURN_SEQ_KEY); if (s?.value) setReturnSeq(JSON.parse(s.value)); } catch (e) {}
-      setLoaded(true);
+      const ok = await loadCoreData();
+      if (!ok) {
+        setBootDone(true);
+        return;
+      }
 
       // ---- accounts: load the user list, migrating the old single-login format if needed ----
       let loadedUsers = null;
@@ -1257,6 +1288,29 @@ export default function StockroomApp() {
           @media (prefers-reduced-motion: reduce) { .sr-skel { animation: none !important; opacity: 0.75 !important; } }
         `}</style>
         <BootSkeleton />
+      </div>
+    );
+  }
+
+  if (bootDone && loadError) {
+    return (
+      <div data-sr-theme={theme} style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: PAPER, minHeight: "100dvh", color: INK, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+        <style>{`${THEME_VARS}${FONT_IMPORT}`}</style>
+        <div style={{ maxWidth: 380, textAlign: "center", background: "var(--sr-card-bg)", border: `1px solid ${LINE}`, borderRadius: 14, padding: "32px 28px", boxShadow: SHADOW_MD }}>
+          <div style={{ width: 46, height: 46, borderRadius: 12, background: AMBER_TINT, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
+            <AlertTriangle size={22} color={AMBER_DARK} />
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 16, fontFamily: "'Space Grotesk', sans-serif", marginBottom: 8 }}>Couldn't load your data</div>
+          <div style={{ color: SLATE, fontSize: 13, lineHeight: 1.5, marginBottom: 20 }}>
+            We couldn't confirm your saved inventory and sales data over the connection — most likely a network hiccup. We stopped here on purpose rather than risk overwriting anything.
+          </div>
+          <button
+            onClick={() => { setLoadError(false); loadCoreData(); }}
+            style={{ padding: "10px 20px", borderRadius: 9, border: "none", background: INK, color: PAPER, fontWeight: 700, fontSize: 13.5 }}
+          >
+            Try again
+          </button>
+        </div>
       </div>
     );
   }
